@@ -1,0 +1,77 @@
+# KartUp — Telemetria de Kart
+
+## Visão Geral
+Projeto de telemetria para kart rodando em um **ESP32-2432S028R (CYD — Cheap Yellow Display)** com display ILI9341 320x240 pixels. Desenvolvido no PlatformIO com framework Arduino.
+
+## Hardware
+- **Board:** ESP32-2432S028R (CYD)
+- **Display:** ILI9341 — 320x240 pixels, landscape (`setRotation(1)`)
+- **Botão:** GPIO 0 (BOOT button físico na placa)
+- **GPS:** UART2 — RX=16, TX=17 (módulo externo, opcional)
+- **Upload port:** COM3, 921600 baud
+- **Monitor:** COM3, 115200 baud
+
+## Restrição Crítica de RAM
+O ESP32 **não tem RAM suficiente para um sprite full-screen** (320×240×2 = 153.600 bytes). Tentativas anteriores falharam silenciosamente — o sprite não era alocado e o display ficava travado na tela de boot.
+
+**Solução adotada:** desenho direto no TFT com **cache anti-flickering** — cada elemento só é redesenhado quando seu valor muda.
+
+## Estrutura do Projeto
+```
+cyd-clock/
+├── src/
+│   ├── main.cpp          ← código principal
+│   ├── logo.h            ← logo KartUp (60×60 px, PROGMEM)
+│   ├── f1_speed_font.h   ← fonte Bahnschrift grande (VLW, PROGMEM)
+│   └── f1_time_font.h    ← fonte Bahnschrift tempos (VLW, PROGMEM)
+├── platformio.ini
+└── CLAUDE.md
+```
+
+## Configuração TFT (platformio.ini)
+Pinos e flags passados via build_flags (sem User_Setup.h separado):
+- MISO=12, MOSI=13, SCLK=14, CS=15, DC=2, RST=-1, BL=21
+- Fontes habilitadas: GLCD, Font2, Font4, Font6, Font7, Font8, GFXFF, SMOOTH_FONT
+- Lib: `bodmer/TFT_eSPI@^2.5.33`, `mikalhart/TinyGPSPlus@^1.0.3`
+
+## Interface Atual: Dark Cockpit F1
+Uma única interface no estilo Fórmula 1:
+- **Barra superior:** status GPS (círculo colorido), título "kartUp", velocidade km/h
+- **Área central superior:** número de volta (esq), delta em segundos (dir)
+- **Tempo atual:** Font 7 (7 segmentos 48px) para M:SS, Font 6 para centésimos em vermelho F1
+- **Barra de delta:** fundo vermelho escuro (esq = perda) / verde escuro (dir = ganho), barra colorida
+- **Linha divisória:** gradiente cinza → vermelho F1 → cinza
+- **Área inferior:** melhor volta (âmbar/roxo) e última volta (cinza) com f1_time_font
+- **Animação de recorde:** borda roxa pulsante ao bater melhor volta
+
+## Paleta de Cores (RGB565)
+```cpp
+C_BG      = 0x0841  // #0a0a0a fundo
+C_PANEL   = 0x1082  // #111111 painéis
+C_RED_F1  = 0xE020  // vermelho Ferrari
+C_AMBER   = 0xFD00  // amarelo-âmbar (melhor volta)
+C_PURPLE  = 0x781F  // roxo (recorde)
+C_BORDER  = 0x18C3  // bordas suaves
+```
+
+## Modos de Operação
+- **DEMO_MODE true** — dados simulados, sem GPS. Velocidade oscila 0–95 km/h, delta ±2s, volta automática a cada 65s. Demo inicia imediatamente (lapActive=true no setup).
+- **DEMO_MODE false** — GPS real via UART2. Linha de chegada definida por coordenadas FINISH_LAT/LON com raio de 8m.
+
+## Lógica de Volta
+- `triggerNewLap()` — registra volta, incrementa contador, verifica novo recorde
+- `lapStartMs` — timestamp de início da volta atual
+- `curLapMs = millis() - lapStartMs` — tempo corrente
+- `deltaS` — diferença em segundos vs melhor volta (demo usa valor simulado)
+
+## Fontes
+- `tft.setTextFont(7)` — 7 segmentos 48px, só suporta `0-9 : . -` (perfeito para tempos)
+- `tft.setTextFont(6)` — 48px mais caracteres
+- `tft.setTextFont(4)` — ~26px (usado nas voltas inferior)
+- `tft.loadFont(f1_time_font)` — fonte VLW custom (Bahnschrift), usada só na área inferior; sempre chamar `tft.unloadFont()` após usar. **Não usar durante boot screen** — pode corromper estado do display.
+- `tft.loadFont(f1_speed_font)` — fonte VLW maior, disponível mas não usada na interface atual
+
+## Histórico de Problemas Resolvidos
+1. **Texto sobreposto no boot** — causado por `tft.loadFont()` durante a tela inicial. Solução: boot screen usa apenas fontes built-in (Font1, Font2, Font4).
+2. **Tela travada no boot** — sprite full-screen falhava silenciosamente por falta de RAM. Solução: removido sprite, desenho direto com cache.
+3. **Demo sem dados iniciais** — `lapActive` iniciava false e levava 65s para primeira volta. Solução: `lapActive=true` + `lapStartMs=millis()` no setup.
