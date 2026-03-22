@@ -7,7 +7,7 @@ Projeto de telemetria para kart rodando em um **ESP32-2432S028R (CYD — Cheap Y
 - **Board:** ESP32-2432S028R (CYD)
 - **Display:** ILI9341 — 320x240 pixels, landscape (`setRotation(1)`)
 - **Botão:** GPIO 0 (BOOT button físico na placa)
-- **GPS:** UART2 — RX=16, TX=17 (módulo externo, opcional)
+- **GPS:** NEO-M8N via UART2 — RX=22, TX=27 (conector CN1), 115200 baud, 10 Hz
 - **Upload port:** COM3, 921600 baud
 - **Monitor:** COM3, 115200 baud
 
@@ -21,6 +21,7 @@ O ESP32 **não tem RAM suficiente para um sprite full-screen** (320×240×2 = 15
 cyd-clock/
 ├── src/
 │   ├── main.cpp          ← código principal
+│   ├── teste_gps.cpp     ← diagnóstico GPS (compilado só com env:teste_gps)
 │   ├── logo.h            ← logo KartUp (60×60 px, PROGMEM)
 │   ├── f1_speed_font.h   ← fonte Bahnschrift grande (VLW, PROGMEM)
 │   └── f1_time_font.h    ← fonte Bahnschrift tempos (VLW, PROGMEM)
@@ -55,8 +56,16 @@ C_BORDER  = 0x18C3  // bordas suaves
 ```
 
 ## Modos de Operação
-- **DEMO_MODE true** — dados simulados, sem GPS. Velocidade oscila 0–95 km/h, delta ±2s, volta automática a cada 65s. Demo inicia imediatamente (lapActive=true no setup).
-- **DEMO_MODE false** — GPS real via UART2. Linha de chegada definida por coordenadas FINISH_LAT/LON com raio de 8m.
+- **`#define USE_MOCK_DATA`** (comentado por padrão) — dados simulados, sem GPS. Velocidade oscila 0–95 km/h, delta ±2s, volta automática a cada 65s. Demo inicia imediatamente (lapActive=true no setup). Para ativar: descomentar a linha no topo de main.cpp.
+- **GPS real** (padrão) — NEO-M8N via UART2. Velocidade real com filtro de média móvel (5 amostras). Linha de chegada definida por coordenadas FINISH_LAT/LON com raio de 8m.
+
+## Configuração GPS
+- `configureGPS()` roda no `setup()` a cada boot — não precisa de intervenção manual
+- Detecta automaticamente o baud atual: tenta 115200 primeiro (boot quente), cai para 9600 se necessário (cold power-on)
+- Envia dois comandos UBX: `CFG-PRT` (115200 baud) + `CFG-RATE` (100ms = 10 Hz)
+- Cold start (primeira ligação ou após longo tempo sem energia): aguardar 1–3 min ao ar livre para fix
+- `gpsOk` = `gps.location.isValid()` — círculo verde na barra superior quando com fix
+- Velocidade zerada automaticamente se perder fix
 
 ## Lógica de Volta
 - `triggerNewLap()` — registra volta, incrementa contador, verifica novo recorde
@@ -75,3 +84,5 @@ C_BORDER  = 0x18C3  // bordas suaves
 1. **Texto sobreposto no boot** — causado por `tft.loadFont()` durante a tela inicial. Solução: boot screen usa apenas fontes built-in (Font1, Font2, Font4).
 2. **Tela travada no boot** — sprite full-screen falhava silenciosamente por falta de RAM. Solução: removido sprite, desenho direto com cache.
 3. **Demo sem dados iniciais** — `lapActive` iniciava false e levava 65s para primeira volta. Solução: `lapActive=true` + `lapStartMs=millis()` no setup.
+4. **GPS sem fix após mudança de baud** — `configureGPS()` mudava para 115200 mas se o comando UBX não era recebido o módulo ficava em 9600 e o ESP32 em 115200, sem comunicação. Solução: `configureGPS()` detecta baud automaticamente antes de reconfigurar.
+5. **GPS oscilando entre 0 e 4 satélites em movimento** — antena cerâmica patch embutida tem ganho baixo para uso veicular. Solução paliativa: filtro de média móvel na velocidade. Solução definitiva: antena ativa externa com conector U.FL.
