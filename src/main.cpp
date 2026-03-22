@@ -3,6 +3,7 @@
 //  Interface: Dark Cockpit F1
 //  Desenho direto no TFT com cache anti-flickering
 // =============================================================
+#ifndef TESTE_GPS
 
 #include <Arduino.h>
 #include <TFT_eSPI.h>
@@ -11,13 +12,15 @@
 #include "f1_speed_font.h"
 #include "f1_time_font.h"
 
-// ─── MODO DEMO ───────────────────────────────────────────────
-#define DEMO_MODE true
+// ─── MOCK DATA (descomente a linha abaixo para simular sem GPS) ───
+// #define USE_MOCK_DATA true
 
 // ─── PINOS ───────────────────────────────────────────────────
-#define GPS_RX_PIN  16
-#define GPS_TX_PIN  17
-#define BOOT_BTN     0
+#define GPS_RX_PIN   22
+#define GPS_TX_PIN   27
+#define BOOT_BTN      0
+#define GPS_BAUD_INIT 9600
+#define GPS_BAUD      115200
 
 // ─── LINHA DE CHEGADA (GPS) ──────────────────────────────────
 #define FINISH_LAT       -27.5954
@@ -106,6 +109,11 @@ unsigned long recordTimer   = 0;
 #define RECORD_FLASH_MS  250
 #define RECORD_FLASHES   6
 
+// ─── FILTRO DE VELOCIDADE (média móvel) ──────────────────────
+#define SPEED_SAMPLES 5
+float   speedBuf[SPEED_SAMPLES] = {};
+uint8_t speedBufIdx = 0;
+
 // ─── GPS / DEMO ──────────────────────────────────────────────
 bool     wasNearFinish = false;
 uint32_t demoLastMs   = 0;
@@ -115,6 +123,75 @@ uint32_t demoLapStart = 0;
 float    mockDelta    = 0.0f;
 bool     mockDeltaDir = true;
 unsigned long lastMockTick = 0;
+
+// ─────────────────────────────────────────────────────────────
+// FILTRO DE VELOCIDADE
+// ─────────────────────────────────────────────────────────────
+float smoothSpeed(float raw) {
+    speedBuf[speedBufIdx] = raw;
+    speedBufIdx = (speedBufIdx + 1) % SPEED_SAMPLES;
+    float sum = 0;
+    for (uint8_t i = 0; i < SPEED_SAMPLES; i++) sum += speedBuf[i];
+    return sum / SPEED_SAMPLES;
+}
+
+void resetSpeedFilter() {
+    memset(speedBuf, 0, sizeof(speedBuf));
+    speedBufIdx = 0;
+}
+
+// ─────────────────────────────────────────────────────────────
+// CONFIGURAÇÃO GPS (10 Hz, 115200 baud)
+// ─────────────────────────────────────────────────────────────
+static const uint8_t UBX_SET_BAUD[] = {
+    0xB5, 0x62, 0x06, 0x00, 0x14, 0x00,
+    0x01, 0x00, 0x00, 0x00, 0xD0, 0x08, 0x00, 0x00,
+    0x00, 0xC2, 0x01, 0x00, 0x07, 0x00, 0x03, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0xC0, 0xBE
+};
+static const uint8_t UBX_SET_10HZ[] = {
+    0xB5, 0x62, 0x06, 0x08, 0x06, 0x00,
+    0x64, 0x00, 0x01, 0x00, 0x01, 0x00,
+    0x7A, 0x12
+};
+
+// Retorna true se o GPS está respondendo com dados NMEA no baud atual
+bool gpsResponding() {
+    uint32_t t = millis();
+    while (millis() - t < 300) {
+        if (gpsSerial.available()) return true;
+    }
+    return false;
+}
+
+void sendUBX(const uint8_t* cmd, size_t len) {
+    gpsSerial.write(cmd, len);
+    gpsSerial.flush();
+    delay(150);
+}
+
+void configureGPS() {
+    // Tenta 115200 primeiro (módulo já configurado de boot anterior)
+    gpsSerial.end();
+    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    if (gpsResponding()) {
+        // Já está em 115200 — só reaplica 10 Hz
+        sendUBX(UBX_SET_10HZ, sizeof(UBX_SET_10HZ));
+        return;
+    }
+
+    // Não respondeu em 115200 — GPS está em 9600 (cold power-on)
+    gpsSerial.end();
+    gpsSerial.begin(GPS_BAUD_INIT, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    delay(200);  // aguarda GPS estabilizar
+
+    // Muda baud para 115200, depois aplica 10 Hz
+    sendUBX(UBX_SET_BAUD, sizeof(UBX_SET_BAUD));
+    gpsSerial.end();
+    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    delay(150);
+    sendUBX(UBX_SET_10HZ, sizeof(UBX_SET_10HZ));
+}
 
 // ─────────────────────────────────────────────────────────────
 // FORMATAÇÃO
@@ -497,7 +574,11 @@ void drawBootScreen() {
     tft.setTextFont(2);
     tft.setTextColor(C_GRAY, TFT_BLACK);
     tft.drawString("Telemetria para kart", W/2, logoY + LOGO_H + 52);
-    tft.drawString(DEMO_MODE ? "[ MODO DEMO ]" : "[ GPS ATIVO ]", W/2, logoY + LOGO_H + 68);
+#ifdef USE_MOCK_DATA
+    tft.drawString("[ MODO DEMO ]", W/2, logoY + LOGO_H + 68);
+#else
+    tft.drawString("[ GPS ATIVO ]", W/2, logoY + LOGO_H + 68);
+#endif
 
     tft.setTextFont(1);
     tft.setTextColor(C_GRAY_DK, TFT_BLACK);
@@ -513,9 +594,10 @@ void setup() {
     Serial.begin(115200);
     pinMode(BOOT_BTN, INPUT_PULLUP);
 
-    if (!DEMO_MODE) {
-        gpsSerial.begin(9600, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-    }
+#ifndef USE_MOCK_DATA
+    gpsSerial.begin(GPS_BAUD_INIT, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    configureGPS();
+#endif
 
     tft.init();
     tft.setRotation(1);
@@ -544,38 +626,49 @@ void setup() {
 // LOOP
 // ─────────────────────────────────────────────────────────────
 void loop() {
-    if (DEMO_MODE) {
-        updateDemo();
-        if (lapActive) curLapMs = millis() - lapStartMs;
-    } else {
-        while (gpsSerial.available()) gps.encode(gpsSerial.read());
+#ifdef USE_MOCK_DATA
+    updateDemo();
+    if (lapActive) curLapMs = millis() - lapStartMs;
+#else
+    while (gpsSerial.available()) gps.encode(gpsSerial.read());
 
-        if (gps.speed.isValid()) curSpeed   = gps.speed.kmph();
-        gpsOk      = gps.satellites.isValid();
-        satellites = gpsOk ? (int)gps.satellites.value() : 0;
+    gpsOk      = gps.location.isValid();
+    satellites = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
 
-        checkGPSFinishLine();
-
-        if (lapActive) {
-            curLapMs = millis() - lapStartMs;
-            deltaS   = bestLapMs > 0
-                ? (float)((int32_t)curLapMs - (int32_t)bestLapMs) / 1000.0f
-                : 0.0f;
-        }
+    if (!gpsOk) {
+        resetSpeedFilter();
+        curSpeed = 0.0f;
+    } else if (gps.speed.isValid()) {
+        curSpeed = smoothSpeed(gps.speed.kmph());
     }
+
+    checkGPSFinishLine();
+
+    if (lapActive) {
+        curLapMs = millis() - lapStartMs;
+        deltaS   = bestLapMs > 0
+            ? (float)((int32_t)curLapMs - (int32_t)bestLapMs) / 1000.0f
+            : 0.0f;
+    }
+#endif
 
     handleRecordAnimation();
 
-    // Redesenha apenas o que mudou
-    drawGPS();
-    drawSpeed();
-    drawLapCount();
-    drawDeltaNum();
-    drawCurrentLap();
-    drawDeltaBar();
-    drawBestLap();
-    drawLastLap();
-    drawRecordBorder();
-
-    delay(50);
+    // Redesenha apenas o que mudou (sem delay — loop livre)
+    static uint32_t lastDraw = 0;
+    uint32_t now = millis();
+    if (now - lastDraw >= 50) {
+        lastDraw = now;
+        drawGPS();
+        drawSpeed();
+        drawLapCount();
+        drawDeltaNum();
+        drawCurrentLap();
+        drawDeltaBar();
+        drawBestLap();
+        drawLastLap();
+        drawRecordBorder();
+    }
 }
+
+#endif // TESTE_GPS
