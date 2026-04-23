@@ -6,7 +6,10 @@
 #ifndef TESTE_GPS
 
 #include <Arduino.h>
+#include <SPI.h>
+#include <SdFat.h>
 #include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen.h>
 #include <TinyGPS++.h>
 #include "logo.h"
 #include "f1_speed_font.h"
@@ -22,10 +25,27 @@
 #define GPS_BAUD_INIT 9600
 #define GPS_BAUD      115200
 
-// ─── LINHA DE CHEGADA (GPS) ──────────────────────────────────
-#define FINISH_LAT       -27.5954
-#define FINISH_LON       -48.5480
-#define FINISH_RADIUS_M   8.0
+// SD — pinos próprios (SoftSPI, não conflita com display nem touch)
+#define SD_CS_PIN  5
+#define SD_SCK    18
+#define SD_MISO   19
+#define SD_MOSI   23
+
+// ─── PISTAS ──────────────────────────────────────────────────
+struct Track {
+    const char* name;
+    const char* location;
+    double      finishLat;
+    double      finishLon;
+    float       finishRadius;
+};
+
+const Track TRACKS[] = {
+    { "Pista dos Ingleses", "Florianopolis, SC", -27.5954, -48.5480, 8.0 },
+};
+const int TRACK_COUNT = 1;
+
+int selectedTrack = 0;  // índice da pista selecionada
 
 // ─── DIMENSÕES ───────────────────────────────────────────────
 #define W  320
@@ -72,6 +92,35 @@
 #define C_GRAY      0x4208
 #define C_GRAY_DK   0x2104
 #define C_BORDER    0x18C3
+
+// ─── TOUCH (VSPI separado do display) ────────────────────────
+#define TOUCH_CS   33
+#define TOUCH_MOSI 32
+#define TOUCH_MISO 39
+#define TOUCH_CLK  25
+SPIClass touchSPI(HSPI);  // VSPI já ocupado pelo TFT_eSPI
+XPT2046_Touchscreen ts(TOUCH_CS);
+
+// ─── SD CARD (SoftSPI — sem conflito com display ou touch) ───
+typedef SoftSpiDriver<SD_MISO, SD_MOSI, SD_SCK> SdSoftSpi;
+SdSoftSpi softSpi;
+SdFat32   sd;
+File32    logFile;
+bool      sdOk      = false;
+char      logPath[32];
+
+// ─── ESTADO DA APLICAÇÃO ─────────────────────────────────────
+bool isLogging = false;
+
+// Botão INICIAR LOG (tela pronta)
+#define ILOG_X  60
+#define ILOG_Y  148
+#define ILOG_W  200
+#define ILOG_H  48
+
+// Zona ENCERRAR: centro do top bar (entre GPS e velocidade)
+#define STOP_X1  90
+#define STOP_X2  210
 
 // ─── INSTÂNCIAS ──────────────────────────────────────────────
 TFT_eSPI       tft;
@@ -143,54 +192,24 @@ void resetSpeedFilter() {
 // ─────────────────────────────────────────────────────────────
 // CONFIGURAÇÃO GPS (10 Hz, 115200 baud)
 // ─────────────────────────────────────────────────────────────
-static const uint8_t UBX_SET_BAUD[] = {
-    0xB5, 0x62, 0x06, 0x00, 0x14, 0x00,
-    0x01, 0x00, 0x00, 0x00, 0xD0, 0x08, 0x00, 0x00,
-    0x00, 0xC2, 0x01, 0x00, 0x07, 0x00, 0x03, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0xC0, 0xBE
-};
-static const uint8_t UBX_SET_10HZ[] = {
-    0xB5, 0x62, 0x06, 0x08, 0x06, 0x00,
-    0x64, 0x00, 0x01, 0x00, 0x01, 0x00,
-    0x7A, 0x12
-};
-
-// Retorna true se o GPS está respondendo com dados NMEA no baud atual
-bool gpsResponding() {
-    uint32_t t = millis();
-    while (millis() - t < 300) {
-        if (gpsSerial.available()) return true;
-    }
-    return false;
-}
-
-void sendUBX(const uint8_t* cmd, size_t len) {
-    gpsSerial.write(cmd, len);
-    gpsSerial.flush();
-    delay(150);
-}
-
 void configureGPS() {
-    // Tenta 115200 primeiro (módulo já configurado de boot anterior)
-    gpsSerial.end();
-    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-    if (gpsResponding()) {
-        // Já está em 115200 — só reaplica 10 Hz
-        sendUBX(UBX_SET_10HZ, sizeof(UBX_SET_10HZ));
-        return;
-    }
-
-    // Não respondeu em 115200 — GPS está em 9600 (cold power-on)
     gpsSerial.end();
     gpsSerial.begin(GPS_BAUD_INIT, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-    delay(200);  // aguarda GPS estabilizar
+    delay(200);
 
-    // Muda baud para 115200, depois aplica 10 Hz
-    sendUBX(UBX_SET_BAUD, sizeof(UBX_SET_BAUD));
-    gpsSerial.end();
-    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-    delay(150);
-    sendUBX(UBX_SET_10HZ, sizeof(UBX_SET_10HZ));
+    // Reset frio — limpa estado ruim de sessões anteriores
+    // UBX CFG-RST: clearMask=0xFFFF (tudo), resetMode=0x01 (controlled software reset)
+    static const uint8_t coldReset[] = {
+        0xB5, 0x62, 0x06, 0x04, 0x04, 0x00,
+        0xFF, 0xFF, 0x01, 0x00,
+        0x0E, 0x61
+    };
+    gpsSerial.write(coldReset, sizeof(coldReset));
+    gpsSerial.flush();
+    delay(1000); // aguarda módulo reiniciar
+
+    Serial.println("[GPS] Reset frio enviado, aguardando...");
+    delay(500);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -514,10 +533,11 @@ void triggerNewLap() {
 // ─────────────────────────────────────────────────────────────
 void checkGPSFinishLine() {
     if (!gps.location.isValid()) return;
+    const Track &t = TRACKS[selectedTrack];
     double dist = TinyGPSPlus::distanceBetween(
         gps.location.lat(), gps.location.lng(),
-        FINISH_LAT, FINISH_LON);
-    bool near = dist < FINISH_RADIUS_M;
+        t.finishLat, t.finishLon);
+    bool near = dist < t.finishRadius;
     if (near && !wasNearFinish) triggerNewLap();
     wasNearFinish = near;
 }
@@ -554,6 +574,11 @@ void updateDemo() {
 // ─────────────────────────────────────────────────────────────
 // SPLASH SCREEN
 // ─────────────────────────────────────────────────────────────
+#define BTN_X  80
+#define BTN_Y  162
+#define BTN_W  160
+#define BTN_H   42
+
 void drawBootScreen() {
     tft.fillScreen(TFT_BLACK);
 
@@ -561,30 +586,319 @@ void drawBootScreen() {
     tft.fillRect(0, H - 4, W, 4, C_RED_F1);
 
     int logoX = (W - LOGO_W) / 2;
-    int logoY = 30;
+    int logoY = 22;
     tft.pushImage(logoX, logoY, LOGO_W, LOGO_H, logo_kartup);
 
     tft.setTextDatum(MC_DATUM);
     tft.setTextFont(4);
     tft.setTextColor(C_WHITE, TFT_BLACK);
-    tft.drawString("kart", W/2 - 22, logoY + LOGO_H + 22);
+    tft.drawString("kart", W/2 - 22, logoY + LOGO_H + 18);
     tft.setTextColor(C_RED_F1, TFT_BLACK);
-    tft.drawString("Up", W/2 + 16, logoY + LOGO_H + 22);
+    tft.drawString("Up", W/2 + 16, logoY + LOGO_H + 18);
 
     tft.setTextFont(2);
     tft.setTextColor(C_GRAY, TFT_BLACK);
-    tft.drawString("Telemetria para kart", W/2, logoY + LOGO_H + 52);
+    tft.drawString("Telemetria para kart", W/2, logoY + LOGO_H + 40);
 #ifdef USE_MOCK_DATA
-    tft.drawString("[ MODO DEMO ]", W/2, logoY + LOGO_H + 68);
+    tft.drawString("[ MODO DEMO ]", W/2, logoY + LOGO_H + 55);
 #else
-    tft.drawString("[ GPS ATIVO ]", W/2, logoY + LOGO_H + 68);
+    tft.drawString("[ GPS ATIVO ]", W/2, logoY + LOGO_H + 55);
 #endif
+
+    // Botão START
+    tft.fillRoundRect(BTN_X, BTN_Y, BTN_W, BTN_H, 8, C_RED_F1);
+    tft.drawRoundRect(BTN_X - 1, BTN_Y - 1, BTN_W + 2, BTN_H + 2, 9, C_WHITE);
+    tft.setTextFont(4);
+    tft.setTextColor(C_WHITE, C_RED_F1);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("START", W/2, BTN_Y + BTN_H/2);
 
     tft.setTextFont(1);
     tft.setTextColor(C_GRAY_DK, TFT_BLACK);
     tft.drawString("kartUp.pro", W/2, H - 14);
+}
 
-    delay(2000);
+// Calibração aproximada CYD ESP32-2432S028R (rotation 1)
+// Ajuste X/Y_MIN/MAX se o mapeamento estiver errado
+#define T_X_MIN  300
+#define T_X_MAX  3900
+#define T_Y_MIN  300
+#define T_Y_MAX  3900
+
+void touchToScreen(TS_Point p, int &sx, int &sy) {
+    sx = constrain(map(4096 - p.x, T_X_MIN, T_X_MAX, 0, W - 1), 0, W - 1);
+    sy = constrain(map(p.y,        T_Y_MIN, T_Y_MAX, 0, H - 1), 0, H - 1);
+}
+
+bool inButton(int sx, int sy) {
+    return sx >= BTN_X && sx <= BTN_X + BTN_W &&
+           sy >= BTN_Y && sy <= BTN_Y + BTN_H;
+}
+
+// ─────────────────────────────────────────────────────────────
+// MENU DE PISTAS
+// ─────────────────────────────────────────────────────────────
+#define CARD_X   10
+#define CARD_Y   56
+#define CARD_W  300
+#define CARD_H   96
+#define CARDS_PER_PAGE 2
+
+void drawTrackCard(int idx, int cardY, bool selected) {
+    const Track &t = TRACKS[idx];
+    uint16_t borderCol = selected ? C_RED_F1 : C_BORDER;
+
+    tft.fillRoundRect(CARD_X, cardY, CARD_W, CARD_H, 6, C_PANEL);
+    tft.drawRoundRect(CARD_X, cardY, CARD_W, CARD_H, 6, borderCol);
+    if (selected) {
+        tft.drawRoundRect(CARD_X + 1, cardY + 1, CARD_W - 2, CARD_H - 2, 5, C_RED_F1);
+    }
+
+    // Faixa lateral vermelha
+    tft.fillRoundRect(CARD_X, cardY, 6, CARD_H, 6, C_RED_F1);
+    tft.fillRect(CARD_X + 3, cardY, 3, CARD_H, C_RED_F1);
+
+    // Nome da pista
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextFont(4);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.drawString(t.name, CARD_X + 18, cardY + 28);
+
+    // Localização
+    tft.setTextFont(2);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.drawString(t.location, CARD_X + 18, cardY + 54);
+
+    // Coordenadas
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY_DK, C_PANEL);
+    char buf[40];
+    snprintf(buf, sizeof(buf), "%.4f, %.4f  r=%.0fm",
+        t.finishLat, t.finishLon, t.finishRadius);
+    tft.drawString(buf, CARD_X + 18, cardY + 72);
+}
+
+void drawTrackMenu(int highlight) {
+    tft.fillScreen(C_BG);
+
+    // Header
+    tft.fillRect(0, 0, W, 24, C_PANEL);
+    tft.drawFastHLine(0, 24, W, C_RED_F1);
+    tft.drawFastHLine(0, 25, W, C_RED_F1);
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("SELECIONAR PISTA", 10, 12);
+
+    // Contador
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d pista(s)", TRACK_COUNT);
+    tft.setTextColor(C_GRAY_DK, C_PANEL);
+    tft.setTextDatum(MR_DATUM);
+    tft.drawString(buf, W - 8, 12);
+
+    // Cards
+    for (int i = 0; i < TRACK_COUNT && i < CARDS_PER_PAGE; i++) {
+        int cy = CARD_Y + i * (CARD_H + 10);
+        drawTrackCard(i, cy, i == highlight);
+    }
+
+    // Dica inferior
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY_DK, C_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("toque na pista para selecionar", W / 2, H - 8);
+}
+
+int waitForTrackSelection() {
+    int highlighted = 0;
+    drawTrackMenu(highlighted);
+
+    while (ts.getPoint().z > 100) delay(10);  // debounce
+
+    while (true) {
+        delay(20);
+        TS_Point p = ts.getPoint();
+        if (p.z < 200) continue;
+        int sx, sy;
+        touchToScreen(p, sx, sy);
+
+        for (int i = 0; i < TRACK_COUNT && i < CARDS_PER_PAGE; i++) {
+            int cy = CARD_Y + i * (CARD_H + 10);
+            if (sx >= CARD_X && sx <= CARD_X + CARD_W &&
+                sy >= cy      && sy <= cy + CARD_H) {
+                // flash de confirmação
+                drawTrackCard(i, cy, true);
+                tft.fillRect(CARD_X + 2, cy + CARD_H - 14, CARD_W - 4, 10, C_RED_F1);
+                tft.setTextFont(1);
+                tft.setTextColor(C_WHITE, C_RED_F1);
+                tft.setTextDatum(MC_DATUM);
+                tft.drawString("SELECIONADO", W / 2, cy + CARD_H - 9);
+                delay(600);
+                return i;
+            }
+        }
+    }
+}
+
+void waitForStart() {
+    Serial.println("[TOUCH] aguardando START...");
+    while (ts.getPoint().z > 100) delay(10);  // debounce
+    while (true) {
+        delay(20);
+        TS_Point p = ts.getPoint();
+        if (p.z < 200) continue;
+        int sx, sy;
+        touchToScreen(p, sx, sy);
+        Serial.printf("[TOUCH] raw(%d,%d) → screen(%d,%d) btn=%d\n",
+            p.x, p.y, sx, sy, inButton(sx, sy) ? 1 : 0);
+        if (!inButton(sx, sy)) continue;
+        // toque no botão confirmado
+        tft.fillRoundRect(BTN_X, BTN_Y, BTN_W, BTN_H, 8, C_WHITE);
+        tft.setTextFont(4);
+        tft.setTextColor(C_RED_F1, C_WHITE);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString("START", W/2, BTN_Y + BTN_H/2);
+        delay(250);
+        return;
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// SD — INIT E LOG
+// ─────────────────────────────────────────────────────────────
+void initSD() {
+    SdSpiConfig cfg(SD_CS_PIN, DEDICATED_SPI, SD_SCK_MHZ(2), &softSpi);
+    if (!sd.begin(cfg)) {
+        Serial.println("[SD] Falha ao inicializar — sem cartão ou pino CS errado");
+        sd.initErrorPrint(&Serial);
+        sdOk = false;
+        return;
+    }
+    sdOk = true;
+
+    // Cria arquivo com número de sessão incremental
+    for (int i = 1; i <= 999; i++) {
+        snprintf(logPath, sizeof(logPath), "gps_%03d.csv", i);
+        if (!sd.exists(logPath)) break;
+    }
+    logFile = sd.open(logPath, O_WRITE | O_CREAT | O_TRUNC);
+    if (!logFile) {
+        Serial.printf("[SD] Falha ao criar %s\n", logPath);
+        sdOk = false;
+        return;
+    }
+    logFile.println("time_utc,lat,lon,speed_kmh,lap,lap_ms,delta_s");
+    logFile.flush();
+    Serial.printf("[SD] OK — Log: %s\n", logPath);
+}
+
+void sdLog(const char* timeStr, double lat, double lon, float spd) {
+    if (!sdOk || !logFile) return;
+    char buf[96];
+    snprintf(buf, sizeof(buf), "%s,%.7f,%.7f,%.1f,%d,%lu,%.2f",
+        timeStr, lat, lon, spd, lapCount, curLapMs, deltaS);
+    logFile.println(buf);
+    // Flush a cada 10s evita perda de dados sem travar o loop
+    static uint32_t lastFlush = 0;
+    if (millis() - lastFlush >= 10000) {
+        lastFlush = millis();
+        logFile.flush();
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
+// TELA PRONTA (aguardando INICIAR LOG)
+// ─────────────────────────────────────────────────────────────
+void drawReadyScreen() {
+    tft.fillScreen(C_BG);
+    tft.fillRect(0, 0, W, TOP_H, C_PANEL);
+    tft.drawFastHLine(0, TOP_H,   W, C_RED_F1);
+    tft.drawFastHLine(0, TOP_H+1, W, C_RED_F1);
+
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("kartUp", W/2, TOP_H/2);
+
+    const Track &t = TRACKS[selectedTrack];
+    tft.setTextFont(4);
+    tft.setTextColor(C_WHITE, C_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(t.name, W/2, 78);
+
+    tft.setTextFont(2);
+    tft.setTextColor(C_GRAY, C_BG);
+    tft.drawString(t.location, W/2, 104);
+
+    // Botão INICIAR LOG
+    uint16_t C_GREEN_DK = tft.color565(0, 100, 0);
+    tft.fillRoundRect(ILOG_X, ILOG_Y, ILOG_W, ILOG_H, 8, C_GREEN_DK);
+    tft.drawRoundRect(ILOG_X-1, ILOG_Y-1, ILOG_W+2, ILOG_H+2, 9, C_GREEN);
+    tft.setTextFont(4);
+    tft.setTextColor(C_WHITE, C_GREEN_DK);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("INICIAR LOG", W/2, ILOG_Y + ILOG_H/2);
+
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY_DK, C_BG);
+    tft.drawString("kartUp.pro", W/2, H - 8);
+}
+
+void updateReadyGPS() {
+    // Atualiza indicador GPS na tela pronta (canto superior esquerdo)
+    tft.fillRect(6, 4, 84, TOP_H - 8, C_PANEL);
+    uint16_t col = gpsOk ? C_GREEN : C_RED;
+    tft.fillCircle(12, TOP_H/2, 4, col);
+    tft.setTextFont(1);
+    tft.setTextColor(col, C_PANEL);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("GPS " + String(satellites), 20, TOP_H/2);
+}
+
+void resetLapState() {
+    curLapMs = 0; lastLapMs = 0; bestLapMs = 0;
+    lapCount = 0; lapActive = false; lapStartMs = 0;
+    deltaS = 0; newBest = false;
+    recordAnim = false; recordFlashes = 0;
+    wasNearFinish = false;
+    cacheSpeed = -1; cacheCurLap = UINT32_MAX;
+    cacheBestLap = UINT32_MAX; cacheLastLap = UINT32_MAX;
+    cacheLapCnt = -1; cacheDelta = -999;
+    cacheGpsOk = false; cacheSats = -1; cacheNewBest = false;
+    resetSpeedFilter();
+}
+
+void drawStopZone() {
+    // "■ STOP" clicável no centro do top bar
+    tft.fillRect(STOP_X1, 2, STOP_X2 - STOP_X1, TOP_H - 4, C_PANEL);
+    tft.setTextFont(1);
+    tft.setTextColor(C_RED_F1, C_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("[ ENCERRAR ]", (STOP_X1 + STOP_X2) / 2, TOP_H/2);
+}
+
+void startLogging() {
+    initSD();
+    resetLapState();
+    lapActive    = true;
+    lapStartMs   = millis();
+    demoLapStart = millis();
+    isLogging    = true;
+    drawStaticLayout();
+    drawStopZone();
+    drawGPS(); drawSpeed(); drawLapCount();
+    drawDeltaNum(); drawCurrentLap(); drawDeltaBar();
+    drawBestLap(); drawLastLap();
+    Serial.printf("[LOG] Iniciado — %s\n", sdOk ? logPath : "sem SD");
+}
+
+void stopLogging() {
+    if (sdOk && logFile) { logFile.flush(); logFile.close(); }
+    sdOk      = false;
+    isLogging = false;
+    Serial.println("[LOG] Encerrado");
+    drawReadyScreen();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -596,44 +910,108 @@ void setup() {
 
 #ifndef USE_MOCK_DATA
     gpsSerial.begin(GPS_BAUD_INIT, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-    configureGPS();
 #endif
+
+    touchSPI.begin(TOUCH_CLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
+    ts.begin(touchSPI);
+    ts.setRotation(1);
 
     tft.init();
     tft.setRotation(1);
 
     drawBootScreen();
+    waitForStart();
+    selectedTrack = waitForTrackSelection();
+    Serial.printf("[MENU] Pista selecionada: %s\n", TRACKS[selectedTrack].name);
 
-    drawStaticLayout();
-    drawGPS();
-    drawSpeed();
-    drawLapCount();
-    drawDeltaNum();
-    drawCurrentLap();
-    drawDeltaBar();
-    drawBestLap();
-    drawLastLap();
+#ifndef USE_MOCK_DATA
+    configureGPS();
+#endif
 
-    // Inicia demo imediatamente
-    lapStartMs   = millis();
-    lapActive    = true;
-    demoLapStart = millis();
-
-    Serial.println("KartUp iniciado!");
+    drawReadyScreen();
+    Serial.println("KartUp pronto.");
 }
 
 // ─────────────────────────────────────────────────────────────
 // LOOP
 // ─────────────────────────────────────────────────────────────
 void loop() {
-#ifdef USE_MOCK_DATA
-    updateDemo();
-    if (lapActive) curLapMs = millis() - lapStartMs;
-#else
-    while (gpsSerial.available()) gps.encode(gpsSerial.read());
+    uint32_t now = millis();
 
+    // ── Leitura GPS (sempre ativa, independente de estado) ──
+#ifndef USE_MOCK_DATA
+    while (gpsSerial.available()) gps.encode(gpsSerial.read());
     gpsOk      = gps.location.isValid();
     satellites = gps.satellites.isValid() ? (int)gps.satellites.value() : 0;
+#endif
+
+    // ── TELA PRONTA: aguardando INICIAR LOG ─────────────────
+    if (!isLogging) {
+        // Atualiza GPS indicator a cada 1s
+        static uint32_t lastReadyGps = 0;
+        if (now - lastReadyGps >= 1000) {
+            lastReadyGps = now;
+            updateReadyGPS();
+        }
+        // Verifica toque no botão INICIAR LOG
+        TS_Point p = ts.getPoint();
+        if (p.z > 200) {
+            int sx, sy;
+            touchToScreen(p, sx, sy);
+            if (sx >= ILOG_X && sx <= ILOG_X + ILOG_W &&
+                sy >= ILOG_Y && sy <= ILOG_Y + ILOG_H) {
+                while (ts.getPoint().z > 100) delay(10);  // debounce
+                startLogging();
+            }
+        }
+        return;
+    }
+
+    // ── ESTADO LOGGING ───────────────────────────────────────
+
+    // Verifica toque em ENCERRAR (centro do top bar)
+    {
+        TS_Point p = ts.getPoint();
+        if (p.z > 200) {
+            int sx, sy;
+            touchToScreen(p, sx, sy);
+            if (sy <= TOP_H && sx >= STOP_X1 && sx <= STOP_X2) {
+                while (ts.getPoint().z > 100) delay(10);
+                stopLogging();
+                return;
+            }
+        }
+    }
+
+#ifdef USE_MOCK_DATA
+    updateDemo();
+    if (lapActive) curLapMs = now - lapStartMs;
+#else
+    uint32_t nowMs = now;
+
+#ifndef GPS_CSV_ONLY
+    static uint32_t lastGpsLog = 0;
+    if (nowMs - lastGpsLog >= 2000) {
+        lastGpsLog = nowMs;
+        Serial.print("[GPS] sats="); Serial.print(satellites);
+        Serial.print(" fix="); Serial.print(gpsOk ? "SIM" : "NAO");
+        if (gpsOk) {
+            Serial.print(" spd="); Serial.print(gps.speed.kmph(), 1);
+        }
+        Serial.println();
+    }
+#endif
+
+    // Log no SD a cada 1s — fix fresco
+    static uint32_t lastCsvLog = 0;
+    bool fixFresh = gps.location.isValid() && gps.location.age() < 1500;
+    if (fixFresh && nowMs - lastCsvLog >= 1000) {
+        lastCsvLog = nowMs;
+        char timeStr[12];
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d",
+            gps.time.hour(), gps.time.minute(), gps.time.second());
+        sdLog(timeStr, gps.location.lat(), gps.location.lng(), gps.speed.kmph());
+    }
 
     if (!gpsOk) {
         resetSpeedFilter();
@@ -645,7 +1023,7 @@ void loop() {
     checkGPSFinishLine();
 
     if (lapActive) {
-        curLapMs = millis() - lapStartMs;
+        curLapMs = nowMs - lapStartMs;
         deltaS   = bestLapMs > 0
             ? (float)((int32_t)curLapMs - (int32_t)bestLapMs) / 1000.0f
             : 0.0f;
@@ -654,13 +1032,22 @@ void loop() {
 
     handleRecordAnimation();
 
-    // Redesenha apenas o que mudou (sem delay — loop livre)
+    // Contador de loops/s
+    static uint32_t loopCount = 0, lastLoopLog = 0;
+    loopCount++;
+    if (now - lastLoopLog >= 5000) {
+        Serial.printf("[CPU] loops/s=%lu  RAM livre=%u bytes\n",
+            loopCount / 5, ESP.getFreeHeap());
+        loopCount = 0; lastLoopLog = now;
+    }
+
+    // Redesenha apenas o que mudou
     static uint32_t lastDraw = 0;
-    uint32_t now = millis();
     if (now - lastDraw >= 50) {
         lastDraw = now;
         drawGPS();
         drawSpeed();
+        drawStopZone();  // mantém ENCERRAR visível
         drawLapCount();
         drawDeltaNum();
         drawCurrentLap();
