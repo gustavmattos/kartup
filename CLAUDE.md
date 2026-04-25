@@ -22,11 +22,13 @@ cyd-clock/
 ├── src/
 │   ├── main.cpp          ← código principal
 │   ├── teste_gps.cpp     ← diagnóstico GPS (compilado só com env:teste_gps)
-│   ├── logo.h            ← logo KartUp (60×60 px, PROGMEM)
+│   ├── logo.h            ← logo KartUp (120×120 px, RGB565 byte-swapped, PROGMEM)
 │   ├── f1_speed_font.h   ← fonte Bahnschrift grande (VLW, PROGMEM)
 │   └── f1_time_font.h    ← fonte Bahnschrift tempos (VLW, PROGMEM)
 ├── platformio.ini
-└── CLAUDE.md
+├── CLAUDE.md
+└── (raiz do repo)
+    └── convert_logo.py   ← script Python: JPEG → RGB565 logo.h (reexecutar ao trocar logo)
 ```
 
 ## Configuração TFT (platformio.ini)
@@ -58,6 +60,7 @@ C_BORDER  = 0x18C3  // bordas suaves
 ## Modos de Operação
 - **`#define USE_MOCK_DATA`** (comentado por padrão) — dados simulados, sem GPS. Velocidade oscila 0–95 km/h, delta ±2s, volta automática a cada 65s. Demo inicia imediatamente (lapActive=true no setup). Para ativar: descomentar a linha no topo de main.cpp.
 - **GPS real** (padrão) — NEO-M8N via UART2. Velocidade real com filtro de média móvel (5 amostras). Linha de chegada definida por coordenadas FINISH_LAT/LON com raio de 8m.
+- **WiFi AP** — ativado por toque em "WiFi / Baixar CSV" na tela pronta. Cria rede `KartUp-Telemetria` (aberta). Acesse `http://192.168.4.1` para listar e baixar arquivos CSV do SD. Sair pelo botão na tela. Logging não ocorre durante WiFi ativo.
 
 ## Configuração GPS
 - `configureGPS()` roda no `setup()` a cada boot — não precisa de intervenção manual
@@ -79,6 +82,24 @@ C_BORDER  = 0x18C3  // bordas suaves
 - `tft.setTextFont(4)` — ~26px (usado nas voltas inferior)
 - `tft.loadFont(f1_time_font)` — fonte VLW custom (Bahnschrift), usada só na área inferior; sempre chamar `tft.unloadFont()` após usar. **Não usar durante boot screen** — pode corromper estado do display.
 - `tft.loadFont(f1_speed_font)` — fonte VLW maior, disponível mas não usada na interface atual
+
+## WiFi AP — Detalhes de Implementação
+- `WebServer httpServer(80)` — global, handlers registrados no `setup()` uma única vez
+- `enterWiFiMode()` — re-inicializa SD (sdOk=false após stopLogging), sobe AP, inicia servidor
+- `exitWiFiMode()` — para servidor, desliga WiFi, sdOk=false (SD re-init em próximo startLogging)
+- `handleLogo()` — converte `logo_kartup[]` RGB565 → BMP 24-bit on-the-fly via `malloc(10854)` + `send_P`
+- `handleRoot()` — HTML dark F1 com logo, card de sessão (lapCount/bestLapMs/lastLapMs/deltaS), lista de arquivos
+- `handleDownload()` — `setContentLength` + `send(200,"text/csv","")` + `httpServer.client().write()` para stream do SD
+- Diretório: `File32 dir = sd.open("/")` — obrigatório usar `sd.open()` (File32 default-constructed não tem volume)
+- Loop WiFi: `httpServer.handleClient()` + detecção de toque no botão SAIR, early-return (GPS/display pausados)
+
+## Logo
+- Fonte: `3.LOGO/LOGO_MAIN.jpeg` (1254×1254px)
+- Script de conversão: `convert_logo.py` na raiz do repo
+- Formato gerado: RGB565 **com byte swap** para TFT_eSPI no ESP32 (`((px & 0xFF) << 8) | (px >> 8)`)
+- Fundo navy (#0D1B2A) substituído por preto puro (#000000) antes da conversão
+- UnsharpMask aplicado pré e pós-resize para manter nitidez
+- Ao trocar a imagem: reexecutar `convert_logo.py`, recompilar e flashar
 
 ## Histórico de Problemas Resolvidos
 1. **Texto sobreposto no boot** — causado por `tft.loadFont()` durante a tela inicial. Solução: boot screen usa apenas fontes built-in (Font1, Font2, Font4).

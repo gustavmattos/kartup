@@ -14,9 +14,27 @@
 #include "logo.h"
 #include "f1_speed_font.h"
 #include "f1_time_font.h"
+#include <WiFi.h>
+#include <WebServer.h>
 
 // ─── MOCK DATA (descomente a linha abaixo para simular sem GPS) ───
 // #define USE_MOCK_DATA true
+
+// ─── WiFi AP ─────────────────────────────────────────────────
+#define WIFI_SSID      "KartUp-Telemetria"
+#define WIFI_PASS      ""     // rede aberta; coloque senha se quiser
+
+// Botão WiFi na tela pronta (canto inferior)
+#define WIFI_BTN_X    100
+#define WIFI_BTN_Y    205
+#define WIFI_BTN_W    120
+#define WIFI_BTN_H     24
+
+// Botão SAIR na tela WiFi
+#define WIFI_SAIR_X    90
+#define WIFI_SAIR_Y   185
+#define WIFI_SAIR_W   140
+#define WIFI_SAIR_H    40
 
 // ─── PINOS ───────────────────────────────────────────────────
 #define GPS_RX_PIN   22
@@ -111,6 +129,8 @@ char      logPath[32];
 
 // ─── ESTADO DA APLICAÇÃO ─────────────────────────────────────
 bool isLogging = false;
+bool wifiMode  = false;
+WebServer httpServer(80);
 
 // Botão INICIAR LOG (tela pronta)
 #define ILOG_X  60
@@ -226,6 +246,14 @@ String formatTime(uint32_t ms) {
 String formatDelta(float d) {
     char buf[10];
     snprintf(buf, sizeof(buf), "%s%.2f", d >= 0 ? "+" : "", d);
+    return String(buf);
+}
+
+String fmtLap(uint32_t ms) {
+    if (ms == 0) return "--:--.---";
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d:%02d.%03d",
+        (int)(ms / 60000), (int)((ms % 60000) / 1000), (int)(ms % 1000));
     return String(buf);
 }
 
@@ -575,7 +603,7 @@ void updateDemo() {
 // SPLASH SCREEN
 // ─────────────────────────────────────────────────────────────
 #define BTN_X  80
-#define BTN_Y  162
+#define BTN_Y  178
 #define BTN_W  160
 #define BTN_H   42
 
@@ -585,24 +613,19 @@ void drawBootScreen() {
     tft.fillRect(0, 0, W, 4, C_RED_F1);
     tft.fillRect(0, H - 4, W, 4, C_RED_F1);
 
+    // Logo 120x120 centralizado — já contém "KARTUP.PRO"
     int logoX = (W - LOGO_W) / 2;
-    int logoY = 22;
+    int logoY = 8;
     tft.pushImage(logoX, logoY, LOGO_W, LOGO_H, logo_kartup);
 
     tft.setTextDatum(MC_DATUM);
-    tft.setTextFont(4);
-    tft.setTextColor(C_WHITE, TFT_BLACK);
-    tft.drawString("kart", W/2 - 22, logoY + LOGO_H + 18);
-    tft.setTextColor(C_RED_F1, TFT_BLACK);
-    tft.drawString("Up", W/2 + 16, logoY + LOGO_H + 18);
-
     tft.setTextFont(2);
     tft.setTextColor(C_GRAY, TFT_BLACK);
-    tft.drawString("Telemetria para kart", W/2, logoY + LOGO_H + 40);
+    tft.drawString("Telemetria para kart", W/2, logoY + LOGO_H + 14);
 #ifdef USE_MOCK_DATA
-    tft.drawString("[ MODO DEMO ]", W/2, logoY + LOGO_H + 55);
+    tft.drawString("[ MODO DEMO ]", W/2, logoY + LOGO_H + 28);
 #else
-    tft.drawString("[ GPS ATIVO ]", W/2, logoY + LOGO_H + 55);
+    tft.drawString("[ GPS ATIVO ]", W/2, logoY + LOGO_H + 28);
 #endif
 
     // Botão START
@@ -840,7 +863,14 @@ void drawReadyScreen() {
     tft.setTextDatum(MC_DATUM);
     tft.drawString("INICIAR LOG", W/2, ILOG_Y + ILOG_H/2);
 
+    // Botão WiFi — baixar CSV pós-sessão
+    tft.fillRoundRect(WIFI_BTN_X, WIFI_BTN_Y, WIFI_BTN_W, WIFI_BTN_H, 5, C_PANEL);
+    tft.drawRoundRect(WIFI_BTN_X, WIFI_BTN_Y, WIFI_BTN_W, WIFI_BTN_H, 5, C_BORDER);
     tft.setTextFont(1);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("WiFi / Baixar CSV", WIFI_BTN_X + WIFI_BTN_W/2, WIFI_BTN_Y + WIFI_BTN_H/2);
+
     tft.setTextColor(C_GRAY_DK, C_BG);
     tft.drawString("kartUp.pro", W/2, H - 8);
 }
@@ -878,6 +908,45 @@ void drawStopZone() {
     tft.drawString("[ ENCERRAR ]", (STOP_X1 + STOP_X2) / 2, TOP_H/2);
 }
 
+// ─────────────────────────────────────────────────────────────
+// TELA WiFi
+// ─────────────────────────────────────────────────────────────
+void drawWiFiScreen() {
+    tft.fillScreen(C_BG);
+
+    tft.fillRect(0, 0, W, TOP_H, C_PANEL);
+    tft.drawFastHLine(0, TOP_H,   W, C_RED_F1);
+    tft.drawFastHLine(0, TOP_H+1, W, C_RED_F1);
+    tft.setTextFont(2);
+    tft.setTextColor(C_RED_F1, C_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("WiFi ATIVO", W/2, TOP_H/2);
+
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(C_GRAY, C_BG);
+    tft.drawString("Rede:", 16, 52);
+    tft.setTextColor(C_ORANGE, C_BG);
+    tft.drawString(WIFI_SSID, 72, 52);
+
+    tft.setTextColor(C_GRAY, C_BG);
+    tft.drawString("IP:", 16, 76);
+    tft.setTextColor(C_ORANGE, C_BG);
+    tft.drawString(WiFi.softAPIP().toString(), 72, 76);
+
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY_DK, C_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("Conecte na rede e abra o IP no navegador", W/2, 112);
+
+    tft.fillRoundRect(WIFI_SAIR_X, WIFI_SAIR_Y, WIFI_SAIR_W, WIFI_SAIR_H, 8, C_RED_F1);
+    tft.drawRoundRect(WIFI_SAIR_X-1, WIFI_SAIR_Y-1, WIFI_SAIR_W+2, WIFI_SAIR_H+2, 9, C_WHITE);
+    tft.setTextFont(4);
+    tft.setTextColor(C_WHITE, C_RED_F1);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("SAIR", WIFI_SAIR_X + WIFI_SAIR_W/2, WIFI_SAIR_Y + WIFI_SAIR_H/2);
+}
+
 void startLogging() {
     initSD();
     resetLapState();
@@ -898,6 +967,190 @@ void stopLogging() {
     sdOk      = false;
     isLogging = false;
     Serial.println("[LOG] Encerrado");
+    drawReadyScreen();
+}
+
+// ─────────────────────────────────────────────────────────────
+// WiFi AP — HTTP HANDLERS
+// ─────────────────────────────────────────────────────────────
+void handleLogo() {
+    const int pixDataSize = LOGO_W * LOGO_H * 3;   // 60*60*3 = 10800
+    const int fileSize    = 54 + pixDataSize;       // 10854
+
+    uint8_t* buf = (uint8_t*)malloc(fileSize);
+    if (!buf) { httpServer.send(500, "text/plain", "OOM"); return; }
+
+    // Arquivo BMP — file header (14 bytes)
+    buf[0] = 'B'; buf[1] = 'M';
+    buf[2]=(uint8_t)fileSize; buf[3]=(uint8_t)(fileSize>>8);
+    buf[4]=(uint8_t)(fileSize>>16); buf[5]=(uint8_t)(fileSize>>24);
+    buf[6]=buf[7]=buf[8]=buf[9]=0;
+    buf[10]=54; buf[11]=buf[12]=buf[13]=0;
+
+    // DIB header (40 bytes) — top-down: height negativo
+    int32_t ww = LOGO_W, hh = -LOGO_H;
+    buf[14]=40; buf[15]=buf[16]=buf[17]=0;
+    memcpy(buf+18, &ww, 4);
+    memcpy(buf+22, &hh, 4);
+    buf[26]=1; buf[27]=0;    // planes = 1
+    buf[28]=24; buf[29]=0;   // bpp = 24
+    memset(buf+30, 0, 24);   // compression, sizes, colors (zero)
+
+    // Pixels: RGB565 → BGR24
+    uint8_t* p = buf + 54;
+    for (int i = 0; i < LOGO_W * LOGO_H; i++) {
+        uint16_t px = logo_kartup[i];
+        *p++ = (px & 0x1F) << 3;           // B
+        *p++ = ((px >> 5) & 0x3F) << 2;    // G
+        *p++ = ((px >> 11) & 0x1F) << 3;   // R
+    }
+
+    httpServer.sendHeader("Cache-Control", "max-age=3600");
+    httpServer.send_P(200, "image/bmp", (const char*)buf, fileSize);
+    free(buf);
+}
+
+void handleRoot() {
+    String html;
+    html.reserve(4096);
+
+    html = F("<!DOCTYPE html><html><head>"
+        "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<title>KartUp Telemetria</title>"
+        "<style>"
+        "*{box-sizing:border-box;margin:0;padding:0}"
+        "body{background:#0a0a0a;color:#fff;font-family:'Courier New',monospace;padding:20px;max-width:480px;margin:0 auto}"
+        "header{display:flex;align-items:center;gap:14px;margin-bottom:24px;border-bottom:2px solid #E8001D;padding-bottom:14px}"
+        "header img{width:60px;height:60px}"
+        "header h1{font-size:1.6em;color:#E8001D;letter-spacing:2px}"
+        "header p{font-size:.75em;color:#888;margin-top:2px}"
+        ".card{background:#141414;border:1px solid #2a2a2a;border-radius:8px;padding:16px;margin-bottom:20px}"
+        ".card h2{font-size:.75em;color:#E8001D;letter-spacing:2px;margin-bottom:12px}"
+        ".row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1e1e1e;font-size:.9em}"
+        ".row:last-child{border-bottom:none}"
+        ".lbl{color:#888}"
+        ".val{color:#FFA500;font-weight:bold}"
+        ".dp{color:#ff4444}"
+        ".dn{color:#44ff44}"
+        ".fi{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #1e1e1e}"
+        ".fi:last-child{border-bottom:none}"
+        ".fn{color:#fff;font-size:.9em}"
+        ".fs{color:#555;font-size:.8em;margin-top:2px}"
+        "a.btn{background:#E8001D;color:#fff;text-decoration:none;padding:6px 14px;border-radius:4px;font-size:.8em;letter-spacing:1px}"
+        ".empty{color:#555;font-size:.9em;padding:12px 0}"
+        "</style></head><body>");
+
+    html += F("<header><img src='/logo.bmp' alt='KartUp'>"
+              "<div><h1>KARTUP</h1><p>Telemetria GPS</p></div></header>");
+
+    // Card sessão
+    html += F("<div class='card'><h2>SESSAO ATUAL</h2>");
+    html += "<div class='row'><span class='lbl'>Arquivo</span><span class='val'>";
+    html += logPath; html += "</span></div>";
+    html += "<div class='row'><span class='lbl'>Voltas</span><span class='val'>";
+    html += lapCount; html += "</span></div>";
+    html += "<div class='row'><span class='lbl'>Melhor volta</span><span class='val'>";
+    html += fmtLap(bestLapMs); html += "</span></div>";
+    html += "<div class='row'><span class='lbl'>Ultima volta</span><span class='val'>";
+    html += fmtLap(lastLapMs); html += "</span></div>";
+    html += "<div class='row'><span class='lbl'>Delta</span><span class='";
+    html += (deltaS <= 0.0f) ? "dn" : "dp";
+    html += "'>";
+    if (deltaS > 0.0f) html += '+';
+    html += String(deltaS, 2); html += "s</span></div>";
+    html += F("</div>");
+
+    // Lista arquivos
+    html += F("<div class='card'><h2>ARQUIVOS NO SD</h2>");
+    if (!sdOk) {
+        html += F("<p class='empty'>SD card indisponivel</p>");
+    } else {
+        File32 dir = sd.open("/");
+        File32 entry;
+        int count = 0;
+        while (entry.openNext(&dir, O_READ)) {
+            char name[32];
+            entry.getName(name, sizeof(name));
+            if (strncmp(name, "gps_", 4) == 0) {
+                uint32_t sz = entry.fileSize();
+                html += "<div class='fi'><div><div class='fn'>";
+                html += name;
+                html += "</div><div class='fs'>";
+                html += String(sz / 1024.0f, 1);
+                html += " KB</div></div><a class='btn' href='/download?file=";
+                html += name;
+                html += "'>BAIXAR</a></div>";
+                count++;
+            }
+            entry.close();
+        }
+        dir.close();
+        if (count == 0) html += F("<p class='empty'>Nenhum arquivo encontrado</p>");
+    }
+    html += F("</div></body></html>");
+
+    httpServer.send(200, "text/html; charset=utf-8", html);
+}
+
+void handleDownload() {
+    if (!httpServer.hasArg("file")) {
+        httpServer.send(400, "text/plain", "Parametro 'file' ausente");
+        return;
+    }
+    String filename = httpServer.arg("file");
+    if (!filename.startsWith("gps_") || !filename.endsWith(".csv") || filename.length() > 12) {
+        httpServer.send(403, "text/plain", "Arquivo nao permitido");
+        return;
+    }
+    if (!sdOk) {
+        httpServer.send(503, "text/plain", "SD indisponivel");
+        return;
+    }
+    File32 file;
+    if (!file.open(filename.c_str(), O_READ)) {
+        httpServer.send(404, "text/plain", "Nao encontrado");
+        return;
+    }
+    httpServer.sendHeader("Content-Disposition",
+        "attachment; filename=\"" + filename + "\"");
+    httpServer.setContentLength(file.fileSize());
+    httpServer.send(200, "text/csv", "");
+
+    WiFiClient client = httpServer.client();
+    uint8_t buf[512];
+    int n;
+    while ((n = file.read(buf, sizeof(buf))) > 0) {
+        client.write(buf, n);
+    }
+    file.close();
+}
+
+// ─────────────────────────────────────────────────────────────
+// ENTRA / SAI do modo WiFi
+// ─────────────────────────────────────────────────────────────
+void enterWiFiMode() {
+    // Re-inicializa SD em modo leitura (sdOk estava false após stopLogging)
+    SdSpiConfig cfg(SD_CS_PIN, DEDICATED_SPI, SD_SCK_MHZ(2), &softSpi);
+    sdOk = sd.begin(cfg);
+
+    wifiMode = true;
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(WIFI_SSID, strlen(WIFI_PASS) ? WIFI_PASS : nullptr);
+    httpServer.begin();
+
+    Serial.printf("[WiFi] AP: %s  IP: %s\n", WIFI_SSID,
+        WiFi.softAPIP().toString().c_str());
+    drawWiFiScreen();
+}
+
+void exitWiFiMode() {
+    httpServer.stop();
+    WiFi.softAPdisconnect(true);
+    WiFi.mode(WIFI_OFF);
+    sdOk     = false;
+    wifiMode = false;
+    Serial.println("[WiFi] Desligado");
     drawReadyScreen();
 }
 
@@ -928,6 +1181,10 @@ void setup() {
     configureGPS();
 #endif
 
+    httpServer.on("/",         HTTP_GET, handleRoot);
+    httpServer.on("/logo.bmp", HTTP_GET, handleLogo);
+    httpServer.on("/download", HTTP_GET, handleDownload);
+
     drawReadyScreen();
     Serial.println("KartUp pronto.");
 }
@@ -936,6 +1193,22 @@ void setup() {
 // LOOP
 // ─────────────────────────────────────────────────────────────
 void loop() {
+    // ── Modo WiFi: processa requisições e botão SAIR ─────────
+    if (wifiMode) {
+        httpServer.handleClient();
+        TS_Point p = ts.getPoint();
+        if (p.z > 200) {
+            int sx, sy;
+            touchToScreen(p, sx, sy);
+            if (sx >= WIFI_SAIR_X && sx <= WIFI_SAIR_X + WIFI_SAIR_W &&
+                sy >= WIFI_SAIR_Y && sy <= WIFI_SAIR_Y + WIFI_SAIR_H) {
+                while (ts.getPoint().z > 100) delay(10);
+                exitWiFiMode();
+            }
+        }
+        return;
+    }
+
     uint32_t now = millis();
 
     // ── Leitura GPS (sempre ativa, independente de estado) ──
@@ -953,15 +1226,24 @@ void loop() {
             lastReadyGps = now;
             updateReadyGPS();
         }
-        // Verifica toque no botão INICIAR LOG
+        // Verifica toque
         TS_Point p = ts.getPoint();
         if (p.z > 200) {
             int sx, sy;
             touchToScreen(p, sx, sy);
+            // Botão INICIAR LOG
             if (sx >= ILOG_X && sx <= ILOG_X + ILOG_W &&
                 sy >= ILOG_Y && sy <= ILOG_Y + ILOG_H) {
-                while (ts.getPoint().z > 100) delay(10);  // debounce
+                while (ts.getPoint().z > 100) delay(10);
                 startLogging();
+                return;
+            }
+            // Botão WiFi
+            if (sx >= WIFI_BTN_X && sx <= WIFI_BTN_X + WIFI_BTN_W &&
+                sy >= WIFI_BTN_Y && sy <= WIFI_BTN_Y + WIFI_BTN_H) {
+                while (ts.getPoint().z > 100) delay(10);
+                enterWiFiMode();
+                return;
             }
         }
         return;
