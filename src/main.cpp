@@ -36,6 +36,20 @@
 #define WIFI_SAIR_W   140
 #define WIFI_SAIR_H    40
 
+// Botão VOLTAR no topo esquerdo
+#define BACK_BTN_X      6
+#define BACK_BTN_Y      2
+#define BACK_BTN_W     32
+#define BACK_BTN_H     20
+#define BACK_TOUCH_PAD 12
+
+// Botão DESLIGAR na tela inicial
+#define PWR_BTN_X    80
+#define PWR_BTN_Y   188
+#define PWR_BTN_W   160
+#define PWR_BTN_H    28
+#define PWR_TOUCH_PAD  12
+
 // ─── PINOS ───────────────────────────────────────────────────
 #define GPS_RX_PIN   22
 #define GPS_TX_PIN   27
@@ -127,10 +141,22 @@ File32    logFile;
 bool      sdOk      = false;
 char      logPath[32];
 
+enum UiScreen {
+    SCREEN_BOOT,
+    SCREEN_TRACK_MENU,
+    SCREEN_READY,
+    SCREEN_WIFI,
+    SCREEN_LOGGING,
+    SCREEN_SHUTDOWN_CONFIRM
+};
+
 // ─── ESTADO DA APLICAÇÃO ─────────────────────────────────────
 bool isLogging = false;
 bool wifiMode  = false;
 WebServer httpServer(80);
+UiScreen currentScreen = SCREEN_BOOT;
+UiScreen shutdownReturnScreen = SCREEN_BOOT;
+int      trackMenuHighlight = 0;
 
 // Botão INICIAR LOG (tela pronta)
 #define ILOG_X  60
@@ -192,6 +218,13 @@ uint32_t demoLapStart = 0;
 float    mockDelta    = 0.0f;
 bool     mockDeltaDir = true;
 unsigned long lastMockTick = 0;
+
+void shutdownSystem();
+void drawShutdownConfirm();
+void drawBackButton();
+bool isBackPressed(int sx, int sy);
+int waitForTrackSelection();
+void runStartupFlow();
 
 // ─────────────────────────────────────────────────────────────
 // FILTRO DE VELOCIDADE
@@ -603,9 +636,18 @@ void updateDemo() {
 // SPLASH SCREEN
 // ─────────────────────────────────────────────────────────────
 #define BTN_X  80
-#define BTN_Y  178
+#define BTN_Y  144
 #define BTN_W  160
 #define BTN_H   42
+
+void drawBootShutdownButton() {
+    tft.fillRoundRect(PWR_BTN_X, PWR_BTN_Y, PWR_BTN_W, PWR_BTN_H, 8, C_PANEL);
+    tft.drawRoundRect(PWR_BTN_X, PWR_BTN_Y, PWR_BTN_W, PWR_BTN_H, 8, C_RED_F1);
+    tft.setTextFont(2);
+    tft.setTextColor(C_RED_F1, C_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("DESLIGAR", W / 2, PWR_BTN_Y + PWR_BTN_H / 2);
+}
 
 void drawBootScreen() {
     tft.fillScreen(TFT_BLACK);
@@ -636,6 +678,8 @@ void drawBootScreen() {
     tft.setTextDatum(MC_DATUM);
     tft.drawString("START", W/2, BTN_Y + BTN_H/2);
 
+    drawBootShutdownButton();
+
     tft.setTextFont(1);
     tft.setTextColor(C_GRAY_DK, TFT_BLACK);
     tft.drawString("kartUp.pro", W/2, H - 14);
@@ -649,8 +693,26 @@ void drawBootScreen() {
 #define T_Y_MAX  3900
 
 void touchToScreen(TS_Point p, int &sx, int &sy) {
-    sx = constrain(map(4096 - p.x, T_X_MIN, T_X_MAX, 0, W - 1), 0, W - 1);
+    sx = constrain(map(p.x,        T_X_MIN, T_X_MAX, 0, W - 1), 0, W - 1);
     sy = constrain(map(p.y,        T_Y_MIN, T_Y_MAX, 0, H - 1), 0, H - 1);
+}
+
+bool inRect(int sx, int sy, int x, int y, int w, int h, int pad = 0) {
+    return sx >= x - pad && sx <= x + w + pad &&
+           sy >= y - pad && sy <= y + h + pad;
+}
+
+void drawBackButton() {
+    tft.fillRoundRect(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_W, BACK_BTN_H, 5, C_PANEL);
+    tft.drawRoundRect(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_W, BACK_BTN_H, 5, C_BORDER);
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("<", BACK_BTN_X + BACK_BTN_W / 2, BACK_BTN_Y + BACK_BTN_H / 2);
+}
+
+bool isBackPressed(int sx, int sy) {
+    return sy <= (TOP_H + 6) && sx <= 72;
 }
 
 bool inButton(int sx, int sy) {
@@ -702,16 +764,19 @@ void drawTrackCard(int idx, int cardY, bool selected) {
 }
 
 void drawTrackMenu(int highlight) {
+    currentScreen = SCREEN_TRACK_MENU;
+    trackMenuHighlight = highlight;
     tft.fillScreen(C_BG);
 
     // Header
     tft.fillRect(0, 0, W, 24, C_PANEL);
     tft.drawFastHLine(0, 24, W, C_RED_F1);
     tft.drawFastHLine(0, 25, W, C_RED_F1);
+    drawBackButton();
     tft.setTextFont(2);
     tft.setTextColor(C_WHITE, C_PANEL);
     tft.setTextDatum(ML_DATUM);
-    tft.drawString("SELECIONAR PISTA", 10, 12);
+    tft.drawString("SELECIONAR PISTA", 46, 12);
 
     // Contador
     char buf[16];
@@ -745,6 +810,12 @@ int waitForTrackSelection() {
         if (p.z < 200) continue;
         int sx, sy;
         touchToScreen(p, sx, sy);
+        Serial.printf("[TRACK_TOUCH] raw(%d,%d) -> screen(%d,%d) back=%d\n",
+            p.x, p.y, sx, sy, isBackPressed(sx, sy) ? 1 : 0);
+        if (isBackPressed(sx, sy)) {
+            while (ts.getPoint().z > 100) delay(10);
+            return -1;
+        }
 
         for (int i = 0; i < TRACK_COUNT && i < CARDS_PER_PAGE; i++) {
             int cy = CARD_Y + i * (CARD_H + 10);
@@ -775,6 +846,12 @@ void waitForStart() {
         touchToScreen(p, sx, sy);
         Serial.printf("[TOUCH] raw(%d,%d) → screen(%d,%d) btn=%d\n",
             p.x, p.y, sx, sy, inButton(sx, sy) ? 1 : 0);
+        if (inRect(sx, sy, PWR_BTN_X, PWR_BTN_Y, PWR_BTN_W, PWR_BTN_H, PWR_TOUCH_PAD)) {
+            while (ts.getPoint().z > 100) delay(10);
+            drawShutdownConfirm();
+            drawBootScreen();
+            continue;
+        }
         if (!inButton(sx, sy)) continue;
         // toque no botão confirmado
         tft.fillRoundRect(BTN_X, BTN_Y, BTN_W, BTN_H, 8, C_WHITE);
@@ -834,10 +911,12 @@ void sdLog(const char* timeStr, double lat, double lon, float spd) {
 // TELA PRONTA (aguardando INICIAR LOG)
 // ─────────────────────────────────────────────────────────────
 void drawReadyScreen() {
+    currentScreen = SCREEN_READY;
     tft.fillScreen(C_BG);
     tft.fillRect(0, 0, W, TOP_H, C_PANEL);
     tft.drawFastHLine(0, TOP_H,   W, C_RED_F1);
     tft.drawFastHLine(0, TOP_H+1, W, C_RED_F1);
+    drawBackButton();
 
     tft.setTextFont(2);
     tft.setTextColor(C_WHITE, C_PANEL);
@@ -877,13 +956,13 @@ void drawReadyScreen() {
 
 void updateReadyGPS() {
     // Atualiza indicador GPS na tela pronta (canto superior esquerdo)
-    tft.fillRect(6, 4, 84, TOP_H - 8, C_PANEL);
+    tft.fillRect(44, 4, 50, TOP_H - 8, C_PANEL);
     uint16_t col = gpsOk ? C_GREEN : C_RED;
-    tft.fillCircle(12, TOP_H/2, 4, col);
+    tft.fillCircle(50, TOP_H/2, 4, col);
     tft.setTextFont(1);
     tft.setTextColor(col, C_PANEL);
     tft.setTextDatum(ML_DATUM);
-    tft.drawString("GPS " + String(satellites), 20, TOP_H/2);
+    tft.drawString("GPS " + String(satellites), 58, TOP_H/2);
 }
 
 void resetLapState() {
@@ -912,6 +991,7 @@ void drawStopZone() {
 // TELA WiFi
 // ─────────────────────────────────────────────────────────────
 void drawWiFiScreen() {
+    currentScreen = SCREEN_WIFI;
     tft.fillScreen(C_BG);
 
     tft.fillRect(0, 0, W, TOP_H, C_PANEL);
@@ -954,6 +1034,7 @@ void startLogging() {
     lapStartMs   = millis();
     demoLapStart = millis();
     isLogging    = true;
+    currentScreen = SCREEN_LOGGING;
     drawStaticLayout();
     drawStopZone();
     drawGPS(); drawSpeed(); drawLapCount();
@@ -1155,11 +1236,111 @@ void exitWiFiMode() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// DESLIGAMENTO DO SISTEMA (deep sleep → IP5306 auto-desliga)
+// ─────────────────────────────────────────────────────────────
+void shutdownSystem() {
+    if (isLogging) {
+        if (sdOk && logFile) { logFile.flush(); logFile.close(); }
+        sdOk      = false;
+        isLogging = false;
+    }
+    tft.fillScreen(C_BG);
+    tft.setTextFont(4);
+    tft.setTextColor(C_WHITE, C_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("Ate logo...", W / 2, 110);
+    tft.setTextFont(2);
+    tft.setTextColor(C_GRAY, C_BG);
+    tft.drawString("Ligue pelo botao do shield", W / 2, 148);
+    delay(1500);
+    digitalWrite(TFT_BL, LOW);  // apaga backlight
+    esp_deep_sleep_start();
+}
+
+void runStartupFlow() {
+    while (true) {
+        currentScreen = SCREEN_BOOT;
+        drawBootScreen();
+        waitForStart();
+        int track = waitForTrackSelection();
+        if (track >= 0) {
+            selectedTrack = track;
+            Serial.printf("[MENU] Pista selecionada: %s\n", TRACKS[selectedTrack].name);
+            drawReadyScreen();
+            return;
+        }
+    }
+}
+
+void drawShutdownConfirm() {
+    shutdownReturnScreen = currentScreen;
+    currentScreen = SCREEN_SHUTDOWN_CONFIRM;
+    // Modal de confirmação
+    tft.fillRoundRect(40, 82, 240, 88, 8, C_PANEL);
+    tft.drawRoundRect(40, 82, 240, 88, 8, C_BORDER);
+    drawBackButton();
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("Desligar sistema?", W / 2, 108);
+
+    // SIM
+    tft.fillRoundRect(60, 133, 86, 27, 6, C_RED_F1);
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_RED_F1);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("SIM", 103, 147);
+
+    // NAO
+    tft.fillRoundRect(174, 133, 86, 27, 6, C_GRAY_DK);
+    tft.drawRoundRect(174, 133, 86, 27, 6, C_BORDER);
+    tft.setTextColor(C_GRAY, C_GRAY_DK);
+    tft.drawString("NAO", 217, 147);
+
+    while (ts.getPoint().z > 100) delay(10);
+
+    while (true) {
+        delay(20);
+        TS_Point p = ts.getPoint();
+        if (p.z < 200) continue;
+        int sx, sy;
+        touchToScreen(p, sx, sy);
+        if (isBackPressed(sx, sy)) {
+            while (ts.getPoint().z > 100) delay(10);
+            if (shutdownReturnScreen == SCREEN_READY) {
+                drawReadyScreen();
+            } else {
+                currentScreen = SCREEN_BOOT;
+                drawBootScreen();
+            }
+            return;
+        }
+        if (inRect(sx, sy, 60, 133, 86, 27, 8)) {
+            while (ts.getPoint().z > 100) delay(10);
+            shutdownSystem();
+            return;
+        }
+        if (inRect(sx, sy, 174, 133, 86, 27, 8)) {
+            while (ts.getPoint().z > 100) delay(10);
+            if (shutdownReturnScreen == SCREEN_READY) {
+                drawReadyScreen();
+            } else {
+                currentScreen = SCREEN_BOOT;
+                drawBootScreen();
+            }
+            return;
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────
 // SETUP
 // ─────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
     pinMode(BOOT_BTN, INPUT_PULLUP);
+    pinMode(TFT_BL, OUTPUT);
+    digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
 
 #ifndef USE_MOCK_DATA
     gpsSerial.begin(GPS_BAUD_INIT, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
@@ -1172,11 +1353,6 @@ void setup() {
     tft.init();
     tft.setRotation(1);
 
-    drawBootScreen();
-    waitForStart();
-    selectedTrack = waitForTrackSelection();
-    Serial.printf("[MENU] Pista selecionada: %s\n", TRACKS[selectedTrack].name);
-
 #ifndef USE_MOCK_DATA
     configureGPS();
 #endif
@@ -1185,7 +1361,7 @@ void setup() {
     httpServer.on("/logo.bmp", HTTP_GET, handleLogo);
     httpServer.on("/download", HTTP_GET, handleDownload);
 
-    drawReadyScreen();
+    runStartupFlow();
     Serial.println("KartUp pronto.");
 }
 
@@ -1231,6 +1407,18 @@ void loop() {
         if (p.z > 200) {
             int sx, sy;
             touchToScreen(p, sx, sy);
+            Serial.printf("[READY_TOUCH] raw(%d,%d) -> screen(%d,%d) back=%d log=%d wifi=%d\n",
+                p.x, p.y, sx, sy,
+                isBackPressed(sx, sy) ? 1 : 0,
+                (sx >= ILOG_X && sx <= ILOG_X + ILOG_W &&
+                 sy >= ILOG_Y && sy <= ILOG_Y + ILOG_H) ? 1 : 0,
+                (sx >= WIFI_BTN_X && sx <= WIFI_BTN_X + WIFI_BTN_W &&
+                 sy >= WIFI_BTN_Y && sy <= WIFI_BTN_Y + WIFI_BTN_H) ? 1 : 0);
+            if (isBackPressed(sx, sy)) {
+                while (ts.getPoint().z > 100) delay(10);
+                runStartupFlow();
+                return;
+            }
             // Botão INICIAR LOG
             if (sx >= ILOG_X && sx <= ILOG_X + ILOG_W &&
                 sy >= ILOG_Y && sy <= ILOG_Y + ILOG_H) {

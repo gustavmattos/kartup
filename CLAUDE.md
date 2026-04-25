@@ -61,6 +61,8 @@ C_BORDER  = 0x18C3  // bordas suaves
 - **`#define USE_MOCK_DATA`** (comentado por padrão) — dados simulados, sem GPS. Velocidade oscila 0–95 km/h, delta ±2s, volta automática a cada 65s. Demo inicia imediatamente (lapActive=true no setup). Para ativar: descomentar a linha no topo de main.cpp.
 - **GPS real** (padrão) — NEO-M8N via UART2. Velocidade real com filtro de média móvel (5 amostras). Linha de chegada definida por coordenadas FINISH_LAT/LON com raio de 8m.
 - **WiFi AP** — ativado por toque em "WiFi / Baixar CSV" na tela pronta. Cria rede `KartUp-Telemetria` (aberta). Acesse `http://192.168.4.1` para listar e baixar arquivos CSV do SD. Sair pelo botão na tela. Logging não ocorre durante WiFi ativo.
+- **Desligamento** — botão "DESLIGAR" na tela inicial, abaixo do `START` (X[80-240] Y[188-216]). Confirmação SIM/NÃO. SIM: fecha SD, exibe "Ate logo...", `esp_deep_sleep_start()`. IP5306 do Battery Shield V8 detecta ausência de carga (~10µA) e auto-desliga em ~30-60s. Religar pelo botão físico do shield. Nenhum GPIO extra necessário.
+- **Voltar** — ícone `<` no canto superior esquerdo em todas as telas, exceto inicial, logging e WiFi. Na tela pronta volta para seleção de pista; na seleção de pista volta para a tela inicial; em modais fecha o modal e retorna para a tela anterior.
 
 ## Configuração GPS
 - `configureGPS()` roda no `setup()` a cada boot — não precisa de intervenção manual
