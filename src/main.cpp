@@ -43,13 +43,6 @@
 #define BACK_BTN_H     20
 #define BACK_TOUCH_PAD 12
 
-// Botão DESLIGAR na tela inicial
-#define PWR_BTN_X    80
-#define PWR_BTN_Y   188
-#define PWR_BTN_W   160
-#define PWR_BTN_H    28
-#define PWR_TOUCH_PAD  12
-
 // ─── PINOS ───────────────────────────────────────────────────
 #define GPS_RX_PIN   22
 #define GPS_TX_PIN   27
@@ -640,15 +633,6 @@ void updateDemo() {
 #define BTN_W  160
 #define BTN_H   42
 
-void drawBootShutdownButton() {
-    tft.fillRoundRect(PWR_BTN_X, PWR_BTN_Y, PWR_BTN_W, PWR_BTN_H, 8, C_PANEL);
-    tft.drawRoundRect(PWR_BTN_X, PWR_BTN_Y, PWR_BTN_W, PWR_BTN_H, 8, C_RED_F1);
-    tft.setTextFont(2);
-    tft.setTextColor(C_RED_F1, C_PANEL);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("DESLIGAR", W / 2, PWR_BTN_Y + PWR_BTN_H / 2);
-}
-
 void drawBootScreen() {
     tft.fillScreen(TFT_BLACK);
 
@@ -660,16 +644,6 @@ void drawBootScreen() {
     int logoY = 8;
     tft.pushImage(logoX, logoY, LOGO_W, LOGO_H, logo_kartup);
 
-    tft.setTextDatum(MC_DATUM);
-    tft.setTextFont(2);
-    tft.setTextColor(C_GRAY, TFT_BLACK);
-    tft.drawString("Telemetria para kart", W/2, logoY + LOGO_H + 14);
-#ifdef USE_MOCK_DATA
-    tft.drawString("[ MODO DEMO ]", W/2, logoY + LOGO_H + 28);
-#else
-    tft.drawString("[ GPS ATIVO ]", W/2, logoY + LOGO_H + 28);
-#endif
-
     // Botão START
     tft.fillRoundRect(BTN_X, BTN_Y, BTN_W, BTN_H, 8, C_RED_F1);
     tft.drawRoundRect(BTN_X - 1, BTN_Y - 1, BTN_W + 2, BTN_H + 2, 9, C_WHITE);
@@ -677,8 +651,6 @@ void drawBootScreen() {
     tft.setTextColor(C_WHITE, C_RED_F1);
     tft.setTextDatum(MC_DATUM);
     tft.drawString("START", W/2, BTN_Y + BTN_H/2);
-
-    drawBootShutdownButton();
 
     tft.setTextFont(1);
     tft.setTextColor(C_GRAY_DK, TFT_BLACK);
@@ -846,12 +818,6 @@ void waitForStart() {
         touchToScreen(p, sx, sy);
         Serial.printf("[TOUCH] raw(%d,%d) → screen(%d,%d) btn=%d\n",
             p.x, p.y, sx, sy, inButton(sx, sy) ? 1 : 0);
-        if (inRect(sx, sy, PWR_BTN_X, PWR_BTN_Y, PWR_BTN_W, PWR_BTN_H, PWR_TOUCH_PAD)) {
-            while (ts.getPoint().z > 100) delay(10);
-            drawShutdownConfirm();
-            drawBootScreen();
-            continue;
-        }
         if (!inButton(sx, sy)) continue;
         // toque no botão confirmado
         tft.fillRoundRect(BTN_X, BTN_Y, BTN_W, BTN_H, 8, C_WHITE);
