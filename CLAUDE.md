@@ -60,8 +60,9 @@ C_BORDER  = 0x18C3  // bordas suaves
 ## Modos de Operação
 - **`#define USE_MOCK_DATA`** (comentado por padrão) — dados simulados, sem GPS. Velocidade oscila 0–95 km/h, delta ±2s, volta automática a cada 65s. Demo inicia imediatamente (lapActive=true no setup). Para ativar: descomentar a linha no topo de main.cpp.
 - **GPS real** (padrão) — NEO-M8N via UART2. Velocidade real com filtro de média móvel (5 amostras). Linha de chegada definida por coordenadas FINISH_LAT/LON com raio de 8m.
-- **WiFi AP** — ativado por toque em "WiFi / Baixar CSV" na tela pronta. Cria rede `KartUp-Telemetria` (aberta). Acesse `http://192.168.4.1` para listar e baixar arquivos CSV do SD. Sair pelo botão na tela. Logging não ocorre durante WiFi ativo.
-- **Desligamento** — botão "DESLIGAR" na tela inicial, abaixo do `START` (X[80-240] Y[188-216]). Confirmação SIM/NÃO. SIM: fecha SD, exibe "Ate logo...", `esp_deep_sleep_start()`. IP5306 do Battery Shield V8 detecta ausência de carga (~10µA) e auto-desliga em ~30-60s. Religar pelo botão físico do shield. Nenhum GPIO extra necessário.
+- **WiFi AP** — ativado por toque em "WiFi / Baixar CSV" na tela pronta ou pela tela `Settings`. Cria rede `KartUp-Telemetria` (aberta). Acesse `http://192.168.4.1` para listar e baixar arquivos CSV do SD. Sair pelo botão na tela. Logging não ocorre durante WiFi ativo.
+- **Settings** — ícone de engrenagem na tela inicial abre uma tela `Settings` em formato de lista. Itens atuais: `Brilho` e `WiFi AP`.
+- **Brilho** — dentro de `Settings`, o item `Brilho` abre um modal com níveis `25%`, `50%`, `75%` e `100%`. Controle do backlight via `analogWrite()` no `TFT_BL` com frequência global de 20 kHz.
 - **Voltar** — ícone `<` no canto superior esquerdo em todas as telas, exceto inicial, logging e WiFi. Na tela pronta volta para seleção de pista; na seleção de pista volta para a tela inicial; em modais fecha o modal e retorna para a tela anterior.
 
 ## Configuração GPS
@@ -87,13 +88,19 @@ C_BORDER  = 0x18C3  // bordas suaves
 
 ## WiFi AP — Detalhes de Implementação
 - `WebServer httpServer(80)` — global, handlers registrados no `setup()` uma única vez
-- `enterWiFiMode()` — re-inicializa SD (sdOk=false após stopLogging), sobe AP, inicia servidor
-- `exitWiFiMode()` — para servidor, desliga WiFi, sdOk=false (SD re-init em próximo startLogging)
+- `enterWiFiMode()` — re-inicializa SD (sdOk=false após stopLogging), sobe AP, inicia servidor; guarda a tela de retorno (`Ready` ou `Settings`)
+- `exitWiFiMode()` — para servidor, desliga WiFi, sdOk=false (SD re-init em próximo startLogging) e retorna para a tela que abriu o AP
 - `handleLogo()` — converte `logo_kartup[]` RGB565 → BMP 24-bit on-the-fly via `malloc(10854)` + `send_P`
 - `handleRoot()` — HTML dark F1 com logo, card de sessão (lapCount/bestLapMs/lastLapMs/deltaS), lista de arquivos
 - `handleDownload()` — `setContentLength` + `send(200,"text/csv","")` + `httpServer.client().write()` para stream do SD
 - Diretório: `File32 dir = sd.open("/")` — obrigatório usar `sd.open()` (File32 default-constructed não tem volume)
 - Loop WiFi: `httpServer.handleClient()` + detecção de toque no botão SAIR, early-return (GPS/display pausados)
+
+## Assets Gerados
+- `src/settings_icon.h` — ícone de engrenagem convertido para RGB565/PROGMEM, usado na tela `Settings`
+- `src/wifi_icon.h` — ícone WiFi convertido para RGB565/PROGMEM, usado na lista da tela `Settings`
+- `3.LOGO/seeting_icon1.png` — fonte do ícone de engrenagem
+- `3.LOGO/wifi_icon.png` — fonte do ícone WiFi
 
 ## Logo
 - Fonte: `3.LOGO/LOGO_MAIN.jpeg` (1254×1254px)

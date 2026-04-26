@@ -12,6 +12,8 @@
 #include <XPT2046_Touchscreen.h>
 #include <TinyGPS++.h>
 #include "logo.h"
+#include "settings_icon.h"
+#include "wifi_icon.h"
 #include "f1_speed_font.h"
 #include "f1_time_font.h"
 #include <WiFi.h>
@@ -35,6 +37,25 @@
 #define WIFI_SAIR_Y   185
 #define WIFI_SAIR_W   140
 #define WIFI_SAIR_H    40
+
+// Botão CONFIG / brilho na tela inicial
+#define SETTINGS_BTN_X   266
+#define SETTINGS_BTN_Y    18
+#define SETTINGS_BTN_W    38
+#define SETTINGS_BTN_H    38
+#define SETTINGS_TOUCH_PAD 8
+
+// Botão BRILHO na tela Settings
+#define BRIGHTNESS_BTN_X   14
+#define BRIGHTNESS_BTN_Y   44
+#define BRIGHTNESS_BTN_W  292
+#define BRIGHTNESS_BTN_H   42
+
+// Botão WiFi AP na tela Settings
+#define WIFI_AP_BTN_X      BRIGHTNESS_BTN_X
+#define WIFI_AP_BTN_Y     (BRIGHTNESS_BTN_Y + BRIGHTNESS_BTN_H + 10)
+#define WIFI_AP_BTN_W      BRIGHTNESS_BTN_W
+#define WIFI_AP_BTN_H      BRIGHTNESS_BTN_H
 
 // Botão VOLTAR no topo esquerdo
 #define BACK_BTN_X      6
@@ -136,6 +157,7 @@ char      logPath[32];
 
 enum UiScreen {
     SCREEN_BOOT,
+    SCREEN_SETTINGS,
     SCREEN_TRACK_MENU,
     SCREEN_READY,
     SCREEN_WIFI,
@@ -149,7 +171,9 @@ bool wifiMode  = false;
 WebServer httpServer(80);
 UiScreen currentScreen = SCREEN_BOOT;
 UiScreen shutdownReturnScreen = SCREEN_BOOT;
+UiScreen wifiReturnScreen = SCREEN_READY;
 int      trackMenuHighlight = 0;
+uint8_t  brightnessIndex = 3;
 
 // Botão INICIAR LOG (tela pronta)
 #define ILOG_X  60
@@ -218,6 +242,13 @@ void drawBackButton();
 bool isBackPressed(int sx, int sy);
 int waitForTrackSelection();
 void runStartupFlow();
+void applyBrightness();
+void drawSettingsButton();
+void drawSettingsScreen();
+void drawBrightnessModal();
+bool isSettingsPressed(int sx, int sy);
+void enterWiFiMode();
+void exitWiFiMode();
 
 // ─────────────────────────────────────────────────────────────
 // FILTRO DE VELOCIDADE
@@ -633,7 +664,10 @@ void updateDemo() {
 #define BTN_W  160
 #define BTN_H   42
 
+const uint8_t BRIGHTNESS_LEVELS[] = {24, 72, 144, 255};
+
 void drawBootScreen() {
+    currentScreen = SCREEN_BOOT;
     tft.fillScreen(TFT_BLACK);
 
     tft.fillRect(0, 0, W, 4, C_RED_F1);
@@ -643,6 +677,8 @@ void drawBootScreen() {
     int logoX = (W - LOGO_W) / 2;
     int logoY = 8;
     tft.pushImage(logoX, logoY, LOGO_W, LOGO_H, logo_kartup);
+
+    drawSettingsButton();
 
     // Botão START
     tft.fillRoundRect(BTN_X, BTN_Y, BTN_W, BTN_H, 8, C_RED_F1);
@@ -654,6 +690,70 @@ void drawBootScreen() {
 
     tft.setTextFont(1);
     tft.setTextColor(C_GRAY_DK, TFT_BLACK);
+    tft.drawString("kartUp.pro", W/2, H - 14);
+}
+
+void drawSettingsScreen() {
+    currentScreen = SCREEN_SETTINGS;
+    tft.fillScreen(C_BG);
+    tft.fillRect(0, 0, W, TOP_H, C_PANEL);
+    tft.drawFastHLine(0, TOP_H,   W, C_RED_F1);
+    tft.drawFastHLine(0, TOP_H+1, W, C_RED_F1);
+    drawBackButton();
+
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("Settings", W/2, TOP_H/2);
+
+    tft.setTextFont(2);
+    tft.setTextColor(C_GRAY, C_BG);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("Ajustes do sistema", 14, 34);
+
+    tft.fillRoundRect(BRIGHTNESS_BTN_X, BRIGHTNESS_BTN_Y, BRIGHTNESS_BTN_W, BRIGHTNESS_BTN_H, 8, C_PANEL);
+    tft.drawRoundRect(BRIGHTNESS_BTN_X, BRIGHTNESS_BTN_Y, BRIGHTNESS_BTN_W, BRIGHTNESS_BTN_H, 8, C_BORDER);
+    tft.pushImage(BRIGHTNESS_BTN_X + 10,
+                  BRIGHTNESS_BTN_Y + (BRIGHTNESS_BTN_H - SETTINGS_ICON_H) / 2,
+                  SETTINGS_ICON_W, SETTINGS_ICON_H, settings_icon, C_PANEL);
+
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.drawString("Brilho", BRIGHTNESS_BTN_X + 66, BRIGHTNESS_BTN_Y + 15);
+
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.drawString("Ajustar iluminacao da tela", BRIGHTNESS_BTN_X + 66, BRIGHTNESS_BTN_Y + 29);
+
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.drawString(">", BRIGHTNESS_BTN_X + BRIGHTNESS_BTN_W - 12, BRIGHTNESS_BTN_Y + BRIGHTNESS_BTN_H / 2);
+
+    tft.fillRoundRect(WIFI_AP_BTN_X, WIFI_AP_BTN_Y, WIFI_AP_BTN_W, WIFI_AP_BTN_H, 8, C_PANEL);
+    tft.drawRoundRect(WIFI_AP_BTN_X, WIFI_AP_BTN_Y, WIFI_AP_BTN_W, WIFI_AP_BTN_H, 8, C_BORDER);
+    tft.pushImage(WIFI_AP_BTN_X + 10,
+                  WIFI_AP_BTN_Y + (WIFI_AP_BTN_H - WIFI_ICON_H) / 2,
+                  WIFI_ICON_W, WIFI_ICON_H, wifi_icon, C_PANEL);
+
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.drawString("WiFi AP", WIFI_AP_BTN_X + 66, WIFI_AP_BTN_Y + 15);
+
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.drawString("Acessar arquivos pelo navegador", WIFI_AP_BTN_X + 66, WIFI_AP_BTN_Y + 29);
+
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.drawString(">", WIFI_AP_BTN_X + WIFI_AP_BTN_W - 12, WIFI_AP_BTN_Y + WIFI_AP_BTN_H / 2);
+
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY_DK, C_BG);
+    tft.setTextDatum(MC_DATUM);
     tft.drawString("kartUp.pro", W/2, H - 14);
 }
 
@@ -674,6 +774,18 @@ bool inRect(int sx, int sy, int x, int y, int w, int h, int pad = 0) {
            sy >= y - pad && sy <= y + h + pad;
 }
 
+void drawSettingsButton() {
+    tft.fillRoundRect(SETTINGS_BTN_X, SETTINGS_BTN_Y, SETTINGS_BTN_W, SETTINGS_BTN_H, 8, C_PANEL);
+    tft.drawRoundRect(SETTINGS_BTN_X, SETTINGS_BTN_Y, SETTINGS_BTN_W, SETTINGS_BTN_H, 8, C_BORDER);
+    tft.pushImage(SETTINGS_BTN_X + (SETTINGS_BTN_W - SETTINGS_ICON_W) / 2,
+                  SETTINGS_BTN_Y + (SETTINGS_BTN_H - SETTINGS_ICON_H) / 2,
+                  SETTINGS_ICON_W, SETTINGS_ICON_H, settings_icon, TFT_BLACK);
+}
+
+bool isSettingsPressed(int sx, int sy) {
+    return inRect(sx, sy, SETTINGS_BTN_X, SETTINGS_BTN_Y, SETTINGS_BTN_W, SETTINGS_BTN_H, SETTINGS_TOUCH_PAD);
+}
+
 void drawBackButton() {
     tft.fillRoundRect(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_W, BACK_BTN_H, 5, C_PANEL);
     tft.drawRoundRect(BACK_BTN_X, BACK_BTN_Y, BACK_BTN_W, BACK_BTN_H, 5, C_BORDER);
@@ -690,6 +802,75 @@ bool isBackPressed(int sx, int sy) {
 bool inButton(int sx, int sy) {
     return sx >= BTN_X && sx <= BTN_X + BTN_W &&
            sy >= BTN_Y && sy <= BTN_Y + BTN_H;
+}
+
+void applyBrightness() {
+    uint8_t duty = BRIGHTNESS_LEVELS[brightnessIndex];
+    analogWrite(TFT_BL, duty);
+    Serial.printf("[BRIGHTNESS] idx=%d duty=%d\n", brightnessIndex, duty);
+}
+
+void drawBrightnessModal() {
+    const int modalX = 36;
+    const int modalY = 74;
+    const int modalW = 248;
+    const int modalH = 112;
+    const int btnY = 126;
+    const int btnW = 50;
+    const int btnH = 32;
+    const int btnGap = 6;
+    const int btnStartX = 49;
+    const char* labels[4] = {"25", "50", "75", "100"};
+
+    tft.fillRoundRect(modalX, modalY, modalW, modalH, 10, C_PANEL);
+    tft.drawRoundRect(modalX, modalY, modalW, modalH, 10, C_BORDER);
+    tft.setTextDatum(MC_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.drawString("Brilho", W / 2, 94);
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.drawString("Toque para ajustar", W / 2, 110);
+
+    for (int i = 0; i < 4; i++) {
+        int x = btnStartX + i * (btnW + btnGap);
+        uint16_t fill = (i == brightnessIndex) ? C_RED_F1 : C_BG;
+        uint16_t text = (i == brightnessIndex) ? C_WHITE : C_GRAY;
+        uint16_t border = (i == brightnessIndex) ? C_WHITE : C_BORDER;
+        tft.fillRoundRect(x, btnY, btnW, btnH, 6, fill);
+        tft.drawRoundRect(x, btnY, btnW, btnH, 6, border);
+        tft.setTextFont(2);
+        tft.setTextColor(text, fill);
+        tft.drawString(labels[i], x + btnW / 2, btnY + btnH / 2);
+    }
+
+    while (ts.getPoint().z > 100) delay(10);
+
+    while (true) {
+        delay(20);
+        TS_Point p = ts.getPoint();
+        if (p.z < 200) continue;
+        int sx, sy;
+        touchToScreen(p, sx, sy);
+        Serial.printf("[BRIGHTNESS_TOUCH] screen(%d,%d)\n", sx, sy);
+
+        if (!inRect(sx, sy, modalX, modalY, modalW, modalH, 8)) {
+            while (ts.getPoint().z > 100) delay(10);
+            drawSettingsScreen();
+            return;
+        }
+
+        for (int i = 0; i < 4; i++) {
+            int x = btnStartX + i * (btnW + btnGap);
+            if (inRect(sx, sy, x, btnY, btnW, btnH, 10)) {
+                brightnessIndex = i;
+                applyBrightness();
+                while (ts.getPoint().z > 100) delay(10);
+                drawSettingsScreen();
+                return;
+            }
+        }
+    }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -818,6 +999,44 @@ void waitForStart() {
         touchToScreen(p, sx, sy);
         Serial.printf("[TOUCH] raw(%d,%d) → screen(%d,%d) btn=%d\n",
             p.x, p.y, sx, sy, inButton(sx, sy) ? 1 : 0);
+        if (currentScreen == SCREEN_SETTINGS) {
+            Serial.printf("[SETTINGS_TOUCH] screen(%d,%d) back=%d brightness=%d wifi=%d\n",
+                sx, sy,
+                isBackPressed(sx, sy) ? 1 : 0,
+                inRect(sx, sy, BRIGHTNESS_BTN_X, BRIGHTNESS_BTN_Y, BRIGHTNESS_BTN_W, BRIGHTNESS_BTN_H, 10) ? 1 : 0,
+                inRect(sx, sy, WIFI_AP_BTN_X, WIFI_AP_BTN_Y, WIFI_AP_BTN_W, WIFI_AP_BTN_H, 10) ? 1 : 0);
+            if (isBackPressed(sx, sy)) {
+                while (ts.getPoint().z > 100) delay(10);
+                drawBootScreen();
+                continue;
+            }
+            if (inRect(sx, sy, BRIGHTNESS_BTN_X, BRIGHTNESS_BTN_Y, BRIGHTNESS_BTN_W, BRIGHTNESS_BTN_H, 10)) {
+                while (ts.getPoint().z > 100) delay(10);
+                drawBrightnessModal();
+                continue;
+            }
+            if (inRect(sx, sy, WIFI_AP_BTN_X, WIFI_AP_BTN_Y, WIFI_AP_BTN_W, WIFI_AP_BTN_H, 10)) {
+                while (ts.getPoint().z > 100) delay(10);
+                enterWiFiMode();
+                continue;
+            }
+            continue;
+        }
+        if (currentScreen == SCREEN_WIFI) {
+            Serial.printf("[WIFI_TOUCH] raw(%d,%d) -> screen(%d,%d) sair=%d\n",
+                p.x, p.y, sx, sy,
+                inRect(sx, sy, WIFI_SAIR_X, WIFI_SAIR_Y, WIFI_SAIR_W, WIFI_SAIR_H, 12) ? 1 : 0);
+            if (inRect(sx, sy, WIFI_SAIR_X, WIFI_SAIR_Y, WIFI_SAIR_W, WIFI_SAIR_H, 12)) {
+                while (ts.getPoint().z > 100) delay(10);
+                exitWiFiMode();
+            }
+            continue;
+        }
+        if (isSettingsPressed(sx, sy)) {
+            while (ts.getPoint().z > 100) delay(10);
+            drawSettingsScreen();
+            continue;
+        }
         if (!inButton(sx, sy)) continue;
         // toque no botão confirmado
         tft.fillRoundRect(BTN_X, BTN_Y, BTN_W, BTN_H, 8, C_WHITE);
@@ -1181,6 +1400,7 @@ void enterWiFiMode() {
     SdSpiConfig cfg(SD_CS_PIN, DEDICATED_SPI, SD_SCK_MHZ(2), &softSpi);
     sdOk = sd.begin(cfg);
 
+    wifiReturnScreen = currentScreen;
     wifiMode = true;
     WiFi.mode(WIFI_AP);
     WiFi.softAP(WIFI_SSID, strlen(WIFI_PASS) ? WIFI_PASS : nullptr);
@@ -1198,7 +1418,8 @@ void exitWiFiMode() {
     sdOk     = false;
     wifiMode = false;
     Serial.println("[WiFi] Desligado");
-    drawReadyScreen();
+    if (wifiReturnScreen == SCREEN_SETTINGS) drawSettingsScreen();
+    else drawReadyScreen();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1306,7 +1527,9 @@ void setup() {
     Serial.begin(115200);
     pinMode(BOOT_BTN, INPUT_PULLUP);
     pinMode(TFT_BL, OUTPUT);
-    digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
+    analogWriteResolution(8);
+    analogWriteFrequency(20000);
+    applyBrightness();
 
 #ifndef USE_MOCK_DATA
     gpsSerial.begin(GPS_BAUD_INIT, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
@@ -1342,8 +1565,10 @@ void loop() {
         if (p.z > 200) {
             int sx, sy;
             touchToScreen(p, sx, sy);
-            if (sx >= WIFI_SAIR_X && sx <= WIFI_SAIR_X + WIFI_SAIR_W &&
-                sy >= WIFI_SAIR_Y && sy <= WIFI_SAIR_Y + WIFI_SAIR_H) {
+            Serial.printf("[WIFI_TOUCH] raw(%d,%d) -> screen(%d,%d) sair=%d\n",
+                p.x, p.y, sx, sy,
+                inRect(sx, sy, WIFI_SAIR_X, WIFI_SAIR_Y, WIFI_SAIR_W, WIFI_SAIR_H, 12) ? 1 : 0);
+            if (inRect(sx, sy, WIFI_SAIR_X, WIFI_SAIR_Y, WIFI_SAIR_W, WIFI_SAIR_H, 12)) {
                 while (ts.getPoint().z > 100) delay(10);
                 exitWiFiMode();
             }
