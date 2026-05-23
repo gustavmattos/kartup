@@ -87,7 +87,7 @@ struct Track {
 };
 
 const Track TRACKS[] = {
-    { "Pista dos Ingleses", "Florianopolis, SC", -27.5954, -48.5480, 8.0 },
+    { "Pista dos Ingleses", "Florianopolis, SC", -27.442399, -48.425761, 5.0 },
 };
 const int TRACK_COUNT = 1;
 
@@ -126,18 +126,26 @@ int selectedTrack = 0;  // índice da pista selecionada
 #define BOT_TEXT_Y (BOT_Y + 20)
 
 // ─── PALETA F1 ───────────────────────────────────────────────
-#define C_BG        0x0841   // #0a0a0a fundo
-#define C_PANEL     0x1082   // #111111 painéis
-#define C_RED_F1    0xE020   // vermelho Ferrari
-#define C_RED       0xF800
-#define C_GREEN     0x07E0
-#define C_ORANGE    0xFC60
-#define C_AMBER     0xFD00   // amarelo-âmbar melhor volta
-#define C_PURPLE    0x781F   // roxo record
+#define C_BG        0x0842   // #080810  azul-preto profundo
+#define C_PANEL     0x0863   // #0f0f1a  surface/paineis
+#define C_PANEL2    0x10A4   // #151525  surface hover/destaque
+#define C_RED_F1    0xE803   // #e8001e  vermelho F1 (accent)
+#define C_RED_BRT   0xF98A   // #ff3355  vermelho bright (highlights)
+#define C_RED       0xF8A8   // #ff1744  vermelho perda
+#define C_GREEN     0x072E   // #00e676  verde ganho
+#define C_SPEED     0x06BF   // #00d4ff  ciano velocidade
+#define C_AMBER     0xF524   // #f5a623  amber melhor volta
+#define C_ORANGE    0xF524   // alias p/ compat (mesmo que AMBER)
+#define C_PURPLE    0x9ADE   // #9b59f5  recorde pessoal
 #define C_WHITE     TFT_WHITE
-#define C_GRAY      0x4208
-#define C_GRAY_DK   0x2104
-#define C_BORDER    0x18C3
+#define C_GRAY      0x8C55   // #8888aa  cinza medio (labels visiveis)
+#define C_GRAY_DK   0x2948   // #2a2a40  cinza escuro (labels fracos)
+#define C_BORDER    0x2948   // #2a2a40  bordas (igual gray_dk)
+// Tintas dim p/ badges (usar tft.color565 em runtime):
+//   RED_DIM   = tft.color565(60,  6, 14)
+//   GREEN_DIM = tft.color565( 0, 50, 22)
+//   AMBER_DIM = tft.color565(60, 38,  6)
+//   SPEED_DIM = tft.color565( 0, 36, 60)
 
 // ─── TOUCH (VSPI separado do display) ────────────────────────
 #define TOUCH_CS   33
@@ -271,7 +279,7 @@ void resetSpeedFilter() {
 // ─────────────────────────────────────────────────────────────
 void configureGPS() {
     gpsSerial.end();
-    gpsSerial.begin(GPS_BAUD_INIT, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
     delay(200);
 
     // Reset frio — limpa estado ruim de sessões anteriores
@@ -341,35 +349,60 @@ uint16_t bestColor() {
 void drawStaticLayout() {
     tft.fillScreen(C_BG);
 
-    // Barra superior
+    // Top bar
     tft.fillRect(0, TOP_Y, W, TOP_H, C_PANEL);
     tft.drawFastHLine(0, TOP_H,   W, C_RED_F1);
     tft.drawFastHLine(0, TOP_H+1, W, C_RED_F1);
 
-    // Labels fixos
+    // Footer com bg solido (separa zona claramente)
+    tft.fillRect(0, BOT_Y, W, BOT_H, C_PANEL);
+
+    // Divider gradiente acima do footer: border -> red -> border
+    for (int i = 0; i < W; i++) {
+        float t = (float)i / (W - 1);
+        uint16_t lc;
+        if (t < 0.20f || t > 0.80f) {
+            lc = C_BORDER;
+        } else if (t < 0.40f) {
+            float k = (t - 0.20f) / 0.20f;
+            uint8_t r = 42 + (uint8_t)((232 - 42) * k);
+            uint8_t g = 42 + (uint8_t)((  0 - 42) * k);
+            uint8_t b = 64 + (uint8_t)(( 30 - 64) * k);
+            lc = tft.color565(r, g, b);
+        } else if (t > 0.60f) {
+            float k = (t - 0.60f) / 0.20f;
+            uint8_t r = 232 + (uint8_t)((42 - 232) * k);
+            uint8_t g =   0 + (uint8_t)((42 -   0) * k);
+            uint8_t b =  30 + (uint8_t)((64 -  30) * k);
+            lc = tft.color565(r, g, b);
+        } else {
+            lc = C_RED_F1;
+        }
+        tft.drawPixel(i, BOT_Y - 3, lc);
+        tft.drawPixel(i, BOT_Y - 2, lc);
+    }
+
+    // Divisor vertical entre MELHOR e ULTIMA no footer
+    tft.drawFastVLine(W/2, BOT_Y + 8, BOT_H - 16, C_BORDER);
+
+    // Labels area central
     tft.setTextFont(1);
     tft.setTextSize(1);
-    tft.setTextColor(C_GRAY_DK, C_BG);
 
+    // VOLTA - label esquerdo (DELTA agora e badge, sem label fixo)
+    tft.setTextColor(C_GRAY, C_BG);
     tft.setTextDatum(ML_DATUM);
     tft.drawString("VOLTA", 10, MID_Y + 10);
-
-    tft.setTextDatum(MR_DATUM);
-    tft.drawString("DELTA", W - 8, MID_Y + 20);
-
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("TEMPO ATUAL", W/2, MID_Y + 26);
 
     // Labels barra de delta
     tft.setTextColor(C_RED, C_BG);
     tft.setTextDatum(ML_DATUM);
     tft.drawString("PERDA", 8, BAR_Y - 8);
-
     tft.setTextColor(C_GREEN, C_BG);
     tft.setTextDatum(MR_DATUM);
     tft.drawString("GANHO", W - 8, BAR_Y - 8);
 
-    // Marcadores da barra
+    // Ticks da barra
     tft.setTextColor(C_GRAY_DK, C_BG);
     tft.setTextDatum(ML_DATUM);
     tft.drawString("-2.0", 8, BAR_Y + BAR_H + 6);
@@ -378,16 +411,8 @@ void drawStaticLayout() {
     tft.setTextDatum(MR_DATUM);
     tft.drawString("+2.0", W - 8, BAR_Y + BAR_H + 6);
 
-    // Linha divisória gradiente (cinza → vermelho → cinza)
-    for (int i = 0; i < W; i++) {
-        float    t  = (float)i / W;
-        uint16_t lc = (t < 0.2f || t > 0.8f) ? C_BORDER : C_RED_F1;
-        tft.drawPixel(i, BOT_Y - 3, lc);
-        tft.drawPixel(i, BOT_Y - 2, lc);
-    }
-
-    // Labels inferiores
-    tft.setTextColor(C_GRAY_DK, C_BG);
+    // Labels footer (sobre C_PANEL agora)
+    tft.setTextColor(C_GRAY, C_PANEL);
     tft.setTextDatum(ML_DATUM);
     tft.drawString("MELHOR", BEST_X, BOT_TEXT_Y - 10);
     tft.setTextDatum(MR_DATUM);
@@ -404,13 +429,15 @@ void drawGPS() {
 
     tft.fillRect(6, 4, 90, TOP_H - 8, C_PANEL);
 
-    uint16_t col = gpsOk ? C_GREEN : C_RED;
-    tft.fillCircle(12, TOP_H/2, 4, col);
+    uint16_t dotCol = gpsOk ? C_GREEN : C_RED;
+    tft.fillCircle(12, TOP_H/2, 4, dotCol);
+    if (gpsOk) tft.drawCircle(12, TOP_H/2, 5, tft.color565(0, 60, 30));
+
     tft.setTextFont(1);
     tft.setTextSize(1);
-    tft.setTextColor(col, C_PANEL);
+    tft.setTextColor(gpsOk ? C_WHITE : C_RED, C_PANEL);
     tft.setTextDatum(ML_DATUM);
-    tft.drawString("GPS " + String(satellites), 20, TOP_H/2);
+    tft.drawString("GPS " + String(satellites), 22, TOP_H/2);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -421,11 +448,22 @@ void drawSpeed() {
     cacheSpeed = curSpeed;
 
     tft.fillRect(SPD_X, 4, SPD_W, TOP_H - 8, C_PANEL);
-    tft.setTextFont(1);
+
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%03d", (int)curSpeed);
+
+    // Numero em ciano (Font 2)
+    tft.setTextFont(2);
     tft.setTextSize(1);
-    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.setTextColor(C_SPEED, C_PANEL);
     tft.setTextDatum(MR_DATUM);
-    tft.drawString(String((int)curSpeed) + " km/h", W - 6, TOP_H/2);
+    tft.drawString(buf, W - 36, TOP_H/2);
+
+    // Unidade em cinza (Font 1)
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.setTextDatum(MR_DATUM);
+    tft.drawString("km/h", W - 6, TOP_H/2 + 1);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -450,16 +488,39 @@ void drawDeltaNum() {
     if (fabsf(deltaS - cacheDelta) < 0.01f) return;
     cacheDelta = deltaS;
 
-    tft.fillRect(DELTA_NUM_X, MID_Y + 2, DELTA_NUM_W, 16, C_BG);
+    const int bx = DELTA_NUM_X + 4;
+    const int by = MID_Y + 2;
+    const int bw = DELTA_NUM_W - 8;
+    const int bh = 18;
+    tft.fillRect(DELTA_NUM_X, MID_Y, DELTA_NUM_W, bh + 4, C_BG);
 
-    uint16_t col = (fabsf(deltaS) < 0.1f) ? C_GRAY
-                 : (deltaS >= 0)           ? C_RED
-                                           : C_GREEN;
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%+.2fs", deltaS);
+
+    // Estado neutro: sem badge, so texto cinza
+    if (fabsf(deltaS) < 0.05f) {
+        tft.setTextFont(2);
+        tft.setTextSize(1);
+        tft.setTextColor(C_GRAY, C_BG);
+        tft.setTextDatum(MR_DATUM);
+        tft.drawString("0.00s", W - 8, by + bh/2);
+        return;
+    }
+
+    bool     gain      = (deltaS < 0);
+    uint16_t bgCol     = gain ? tft.color565( 0, 50, 22)   // green-dim
+                              : tft.color565(60,  6, 14);  // red-dim
+    uint16_t borderCol = gain ? C_GREEN : C_RED;
+    uint16_t textCol   = gain ? C_GREEN : C_RED;
+
+    tft.fillRoundRect(bx, by, bw, bh, 4, bgCol);
+    tft.drawRoundRect(bx, by, bw, bh, 4, borderCol);
+
     tft.setTextFont(2);
     tft.setTextSize(1);
-    tft.setTextColor(col, C_BG);
+    tft.setTextColor(textCol, bgCol);
     tft.setTextDatum(MR_DATUM);
-    tft.drawString(formatDelta(deltaS), W - 8, MID_Y + 10);
+    tft.drawString(buf, bx + bw - 6, by + bh/2 + 1);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -507,37 +568,60 @@ void drawCurrentLap() {
     tft.setTextDatum(TL_DATUM);
     tft.drawString(csStr, 240, TIME_Y + 10);
 
+    // Label flutuante minusculo no canto inferior direito
     tft.setTextFont(1);
     tft.setTextSize(1);
+    tft.setTextColor(C_GRAY_DK, C_BG);
+    tft.setTextDatum(BR_DATUM);
+    tft.drawString("TEMPO ATUAL", W - 8, TIME_Y + TIME_H - 2);
 }
 
 // ─────────────────────────────────────────────────────────────
 // BARRA DE DELTA
 // ─────────────────────────────────────────────────────────────
 void drawDeltaBar() {
-    float maxDelt = 2.0f;
+    static float cacheBarDelta = -999.0f;
+    if (fabsf(deltaS - cacheBarDelta) < 0.02f) return;
+    cacheBarDelta = deltaS;
 
-    // Fundos
-    tft.fillRect(BAR_X,          BAR_Y, BAR_W/2, BAR_H, tft.color565(80, 10, 10));
-    tft.fillRect(BAR_X + BAR_W/2, BAR_Y, BAR_W/2, BAR_H, tft.color565(10, 40, 10));
-    tft.drawRect(BAR_X, BAR_Y, BAR_W, BAR_H, C_BORDER);
+    const float maxDelt = 2.0f;
+    const int   radius  = BAR_H / 2;
+    const int   cx      = BAR_X + BAR_W/2;
 
-    int cx = BAR_X + BAR_W/2;
-    tft.drawFastVLine(cx,              BAR_Y,   BAR_H,   C_GRAY);
-    tft.drawFastVLine(BAR_X + BAR_W/4, BAR_Y+2, BAR_H-4, C_BORDER);
-    tft.drawFastVLine(BAR_X+3*BAR_W/4, BAR_Y+2, BAR_H-4, C_BORDER);
+    // Trilho com borda arredondada
+    tft.fillRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, radius, C_PANEL2);
+    tft.drawRoundRect(BAR_X, BAR_Y, BAR_W, BAR_H, radius, C_BORDER);
 
-    float    ratio  = constrain(fabsf(deltaS) / maxDelt, 0.0f, 1.0f);
-    int      barW   = (int)(ratio * (BAR_W/2 - 2));
-    uint16_t barCol = (deltaS >= 0) ? ((ratio > 0.5f) ? C_RED : C_ORANGE) : C_GREEN;
+    // Marcas internas em -1.0 e +1.0
+    tft.drawFastVLine(BAR_X +     BAR_W/4, BAR_Y + 3, BAR_H - 6, C_BORDER);
+    tft.drawFastVLine(BAR_X + 3 * BAR_W/4, BAR_Y + 3, BAR_H - 6, C_BORDER);
 
-    if (deltaS >= 0 && barW > 0)
-        tft.fillRect(cx - barW, BAR_Y+2, barW, BAR_H-4, barCol);
-    else if (deltaS < 0 && barW > 0)
-        tft.fillRect(cx + 1,   BAR_Y+2, barW, BAR_H-4, barCol);
+    float ratio = constrain(fabsf(deltaS) / maxDelt, 0.0f, 1.0f);
+    int   fillW = (int)(ratio * (BAR_W/2 - 2));
+
+    // Gradiente em strips: intenso na extremidade, esmaece p/ centro
+    if (deltaS > 0.05f && fillW > 0) {
+        int x0 = cx - fillW;
+        for (int i = 0; i < fillW; i++) {
+            float k = 1.0f - (float)i / (float)fillW;
+            uint8_t r = (uint8_t)(255 * (0.25f + 0.75f * k));
+            uint8_t g = (uint8_t)( 23 * k);
+            uint8_t b = (uint8_t)( 68 * (0.30f + 0.70f * k));
+            tft.drawFastVLine(x0 + i, BAR_Y + 2, BAR_H - 4, tft.color565(r, g, b));
+        }
+    } else if (deltaS < -0.05f && fillW > 0) {
+        int x0 = cx + 1;
+        for (int i = 0; i < fillW; i++) {
+            float k = 1.0f - (float)i / (float)fillW;
+            uint8_t r = (uint8_t)(  0 * k);
+            uint8_t g = (uint8_t)(230 * (0.25f + 0.75f * k));
+            uint8_t b = (uint8_t)(118 * (0.30f + 0.70f * k));
+            tft.drawFastVLine(x0 + i, BAR_Y + 2, BAR_H - 4, tft.color565(r, g, b));
+        }
+    }
 
     // Centro branco
-    tft.fillRect(cx - 1, BAR_Y, 3, BAR_H, C_WHITE);
+    tft.fillRect(cx - 1, BAR_Y - 1, 3, BAR_H + 2, C_WHITE);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -548,10 +632,10 @@ void drawBestLap() {
     cacheBestLap = bestLapMs;
     cacheNewBest = newBest;
 
-    tft.fillRect(BEST_X, BOT_TEXT_Y, BEST_W, BOT_H - 22, C_BG);
+    tft.fillRect(BEST_X, BOT_TEXT_Y, BEST_W, BOT_H - 22, C_PANEL);
     tft.loadFont(f1_time_font);
     tft.setTextDatum(ML_DATUM);
-    tft.setTextColor(bestColor(), C_BG);
+    tft.setTextColor(bestColor(), C_PANEL);
     tft.drawString(formatTime(bestLapMs), BEST_X, BOT_TEXT_Y + 8);
     tft.unloadFont();
 }
@@ -563,10 +647,10 @@ void drawLastLap() {
     if (lastLapMs == cacheLastLap) return;
     cacheLastLap = lastLapMs;
 
-    tft.fillRect(LAST_X, BOT_TEXT_Y, LAST_W, BOT_H - 22, C_BG);
+    tft.fillRect(LAST_X, BOT_TEXT_Y, LAST_W, BOT_H - 22, C_PANEL);
     tft.loadFont(f1_time_font);
     tft.setTextDatum(MR_DATUM);
-    tft.setTextColor(C_GRAY, C_BG);
+    tft.setTextColor(C_GRAY, C_PANEL);
     tft.drawString(formatTime(lastLapMs), W - 6, BOT_TEXT_Y + 8);
     tft.unloadFont();
 }
@@ -668,34 +752,121 @@ const uint8_t BRIGHTNESS_LEVELS[] = {24, 72, 144, 255};
 
 void drawBootScreen() {
     currentScreen = SCREEN_BOOT;
-    tft.fillScreen(TFT_BLACK);
+    tft.fillScreen(C_BG);
 
-    tft.fillRect(0, 0, W, 4, C_RED_F1);
-    tft.fillRect(0, H - 4, W, 4, C_RED_F1);
+    // Cantos informativos
+    tft.setTextFont(1);
+    tft.setTextSize(1);
+    tft.setTextColor(C_GRAY_DK, C_BG);
+    tft.setTextDatum(TL_DATUM);
+    tft.drawString("ESP32 CYD", 8, 8);
+    tft.setTextDatum(TR_DATUM);
+    tft.drawString("v2.0", W - 8, 8);
 
-    // Logo 120x120 centralizado — já contém "KARTUP.PRO"
-    int logoX = (W - LOGO_W) / 2;
-    int logoY = 8;
+    // Logo centralizado
+    const int logoX = (W - LOGO_W) / 2;
+    const int logoY = 16;
     tft.pushImage(logoX, logoY, LOGO_W, LOGO_H, logo_kartup);
+    tft.fillRect(logoX, logoY,                  LOGO_W, 4, C_BG);
+    tft.fillRect(logoX, logoY + LOGO_H - 4,     LOGO_W, 4, C_BG);
+
+    // Divider gradiente curto sob o logo (pico vermelho no centro)
+    const int dvY = logoY + LOGO_H + 6;
+    const int dvW = 140;
+    const int dvX = (W - dvW) / 2;
+    for (int i = 0; i < dvW; i++) {
+        float t = (float)i / (dvW - 1);
+        float k = 1.0f - fabsf(t - 0.5f) * 2.0f;
+        uint8_t r = (uint8_t)(232 * k);
+        uint8_t g = 0;
+        uint8_t b = (uint8_t)(30 * k);
+        tft.drawPixel(dvX + i, dvY, tft.color565(r, g, b));
+    }
+
+    // Tagline
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY, C_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("TELEMETRIA  DE  KART", W/2, dvY + 10);
 
     drawSettingsButton();
 
-    // Botão START
+    // Botao START (mantem touch zone)
     tft.fillRoundRect(BTN_X, BTN_Y, BTN_W, BTN_H, 8, C_RED_F1);
-    tft.drawRoundRect(BTN_X - 1, BTN_Y - 1, BTN_W + 2, BTN_H + 2, 9, C_WHITE);
+    tft.drawRoundRect(BTN_X - 1, BTN_Y - 1, BTN_W + 2, BTN_H + 2, 9, C_RED_BRT);
     tft.setTextFont(4);
     tft.setTextColor(C_WHITE, C_RED_F1);
     tft.setTextDatum(MC_DATUM);
     tft.drawString("START", W/2, BTN_Y + BTN_H/2);
 
+    // Progress bar fininha abaixo do botao (decoracao)
+    const int pbX = (W - 160) / 2;
+    const int pbY = BTN_Y + BTN_H + 10;
+    tft.fillRect(pbX, pbY, 160, 2, C_GRAY_DK);
+    tft.fillRect(pbX, pbY,  96, 2, C_RED_F1);
+
     tft.setTextFont(1);
-    tft.setTextColor(C_GRAY_DK, TFT_BLACK);
-    tft.drawString("kartUp.pro", W/2, H - 14);
+    tft.setTextColor(C_GRAY_DK, C_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("kartUp.pro", W/2, H - 12);
+}
+
+// Helper: desenha um item de settings com icon box tintada + badge
+static void drawSettingsItem(int x, int y, int w, int h,
+                             uint16_t iconBgTint,
+                             const uint16_t* iconBmp, int iconW, int iconH,
+                             const char* title, const char* desc,
+                             const char* badgeText, uint16_t badgeColor)
+{
+    // Card
+    tft.fillRoundRect(x, y, w, h, 8, C_PANEL);
+    tft.drawRoundRect(x, y, w, h, 8, C_BORDER);
+
+    // Icon box tintada a esquerda
+    const int iboxW = 28, iboxH = 28;
+    const int iboxX = x + 8;
+    const int iboxY = y + (h - iboxH) / 2;
+    tft.fillRoundRect(iboxX, iboxY, iboxW, iboxH, 6, iconBgTint);
+    tft.pushImage(iboxX + (iboxW - iconW) / 2,
+                  iboxY + (iboxH - iconH) / 2,
+                  iconW, iconH, iconBmp, iconBgTint);
+
+    // Titulo + descricao
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.drawString(title, iboxX + iboxW + 10, y + 15);
+
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.drawString(desc, iboxX + iboxW + 10, y + 31);
+
+    // Badge de status (canto direito)
+    if (badgeText && badgeText[0]) {
+        tft.setTextFont(1);
+        int bw = tft.textWidth(badgeText) + 12;
+        int bh = 14;
+        int bx = x + w - bw - 22;
+        int by = y + (h - bh) / 2;
+        tft.fillRoundRect(bx, by, bw, bh, 4, C_BG);
+        tft.drawRoundRect(bx, by, bw, bh, 4, C_BORDER);
+        tft.setTextColor(badgeColor, C_BG);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString(badgeText, bx + bw/2, by + bh/2 + 1);
+    }
+
+    // Chevron
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextFont(2);
+    tft.setTextColor(C_GRAY, C_PANEL);
+    tft.drawString(">", x + w - 8, y + h/2);
 }
 
 void drawSettingsScreen() {
     currentScreen = SCREEN_SETTINGS;
     tft.fillScreen(C_BG);
+
+    // Top bar
     tft.fillRect(0, 0, W, TOP_H, C_PANEL);
     tft.drawFastHLine(0, TOP_H,   W, C_RED_F1);
     tft.drawFastHLine(0, TOP_H+1, W, C_RED_F1);
@@ -706,50 +877,28 @@ void drawSettingsScreen() {
     tft.setTextDatum(MC_DATUM);
     tft.drawString("Settings", W/2, TOP_H/2);
 
-    tft.setTextFont(2);
+    tft.setTextFont(1);
     tft.setTextColor(C_GRAY, C_BG);
     tft.setTextDatum(ML_DATUM);
-    tft.drawString("Ajustes do sistema", 14, 34);
+    tft.drawString("AJUSTES  DO  SISTEMA", 14, 36);
 
-    tft.fillRoundRect(BRIGHTNESS_BTN_X, BRIGHTNESS_BTN_Y, BRIGHTNESS_BTN_W, BRIGHTNESS_BTN_H, 8, C_PANEL);
-    tft.drawRoundRect(BRIGHTNESS_BTN_X, BRIGHTNESS_BTN_Y, BRIGHTNESS_BTN_W, BRIGHTNESS_BTN_H, 8, C_BORDER);
-    tft.pushImage(BRIGHTNESS_BTN_X + 10,
-                  BRIGHTNESS_BTN_Y + (BRIGHTNESS_BTN_H - SETTINGS_ICON_H) / 2,
-                  SETTINGS_ICON_W, SETTINGS_ICON_H, settings_icon, C_PANEL);
+    // Item BRILHO - icon box amber, badge com % atual
+    const char* pct[4] = {"25%", "50%", "75%", "100%"};
+    drawSettingsItem(BRIGHTNESS_BTN_X, BRIGHTNESS_BTN_Y,
+                     BRIGHTNESS_BTN_W, BRIGHTNESS_BTN_H,
+                     tft.color565(60, 38, 6),
+                     settings_icon, SETTINGS_ICON_W, SETTINGS_ICON_H,
+                     "Brilho", "Ajustar iluminacao da tela",
+                     pct[brightnessIndex], C_AMBER);
 
-    tft.setTextDatum(ML_DATUM);
-    tft.setTextFont(2);
-    tft.setTextColor(C_WHITE, C_PANEL);
-    tft.drawString("Brilho", BRIGHTNESS_BTN_X + 66, BRIGHTNESS_BTN_Y + 15);
-
-    tft.setTextFont(1);
-    tft.setTextColor(C_GRAY, C_PANEL);
-    tft.drawString("Ajustar iluminacao da tela", BRIGHTNESS_BTN_X + 66, BRIGHTNESS_BTN_Y + 29);
-
-    tft.setTextDatum(MR_DATUM);
-    tft.setTextFont(2);
-    tft.setTextColor(C_GRAY, C_PANEL);
-    tft.drawString(">", BRIGHTNESS_BTN_X + BRIGHTNESS_BTN_W - 12, BRIGHTNESS_BTN_Y + BRIGHTNESS_BTN_H / 2);
-
-    tft.fillRoundRect(WIFI_AP_BTN_X, WIFI_AP_BTN_Y, WIFI_AP_BTN_W, WIFI_AP_BTN_H, 8, C_PANEL);
-    tft.drawRoundRect(WIFI_AP_BTN_X, WIFI_AP_BTN_Y, WIFI_AP_BTN_W, WIFI_AP_BTN_H, 8, C_BORDER);
-    tft.pushImage(WIFI_AP_BTN_X + 10,
-                  WIFI_AP_BTN_Y + (WIFI_AP_BTN_H - WIFI_ICON_H) / 2,
-                  WIFI_ICON_W, WIFI_ICON_H, wifi_icon, C_PANEL);
-
-    tft.setTextDatum(ML_DATUM);
-    tft.setTextFont(2);
-    tft.setTextColor(C_WHITE, C_PANEL);
-    tft.drawString("WiFi AP", WIFI_AP_BTN_X + 66, WIFI_AP_BTN_Y + 15);
-
-    tft.setTextFont(1);
-    tft.setTextColor(C_GRAY, C_PANEL);
-    tft.drawString("Acessar arquivos pelo navegador", WIFI_AP_BTN_X + 66, WIFI_AP_BTN_Y + 29);
-
-    tft.setTextDatum(MR_DATUM);
-    tft.setTextFont(2);
-    tft.setTextColor(C_GRAY, C_PANEL);
-    tft.drawString(">", WIFI_AP_BTN_X + WIFI_AP_BTN_W - 12, WIFI_AP_BTN_Y + WIFI_AP_BTN_H / 2);
+    // Item WiFi - icon box ciano, badge ON/OFF
+    drawSettingsItem(WIFI_AP_BTN_X, WIFI_AP_BTN_Y,
+                     WIFI_AP_BTN_W, WIFI_AP_BTN_H,
+                     tft.color565(0, 36, 60),
+                     wifi_icon, WIFI_ICON_W, WIFI_ICON_H,
+                     "WiFi AP", "Arquivos pelo navegador",
+                     wifiMode ? "ON" : "OFF",
+                     wifiMode ? C_GREEN : C_GRAY);
 
     tft.setTextFont(1);
     tft.setTextColor(C_GRAY_DK, C_BG);
@@ -993,6 +1142,7 @@ void waitForStart() {
     while (ts.getPoint().z > 100) delay(10);  // debounce
     while (true) {
         delay(20);
+        if (wifiMode) httpServer.handleClient();
         TS_Point p = ts.getPoint();
         if (p.z < 200) continue;
         int sx, sy;
@@ -1073,16 +1223,16 @@ void initSD() {
         sdOk = false;
         return;
     }
-    logFile.println("time_utc,lat,lon,speed_kmh,lap,lap_ms,delta_s");
+    logFile.println("time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s");
     logFile.flush();
     Serial.printf("[SD] OK — Log: %s\n", logPath);
 }
 
-void sdLog(const char* timeStr, double lat, double lon, float spd) {
+void sdLog(const char* timeStr, uint32_t ms, double lat, double lon, float spd) {
     if (!sdOk || !logFile) return;
-    char buf[96];
-    snprintf(buf, sizeof(buf), "%s,%.7f,%.7f,%.1f,%d,%lu,%.2f",
-        timeStr, lat, lon, spd, lapCount, curLapMs, deltaS);
+    char buf[112];
+    snprintf(buf, sizeof(buf), "%s,%lu,%.7f,%.7f,%.1f,%d,%lu,%.2f",
+        timeStr, ms, lat, lon, spd, lapCount, curLapMs, deltaS);
     logFile.println(buf);
     // Flush a cada 10s evita perda de dados sem travar o loop
     static uint32_t lastFlush = 0;
@@ -1532,7 +1682,7 @@ void setup() {
     applyBrightness();
 
 #ifndef USE_MOCK_DATA
-    gpsSerial.begin(GPS_BAUD_INIT, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
 #endif
 
     touchSPI.begin(TOUCH_CLK, TOUCH_MISO, TOUCH_MOSI, TOUCH_CS);
@@ -1663,15 +1813,15 @@ void loop() {
     }
 #endif
 
-    // Log no SD a cada 1s — fix fresco
+    // Log no SD a cada 100ms (10 Hz) — fix fresco
     static uint32_t lastCsvLog = 0;
-    bool fixFresh = gps.location.isValid() && gps.location.age() < 1500;
-    if (fixFresh && nowMs - lastCsvLog >= 1000) {
+    bool fixFresh = gps.location.isValid() && gps.location.age() < 200;
+    if (fixFresh && nowMs - lastCsvLog >= 100) {
         lastCsvLog = nowMs;
         char timeStr[12];
         snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d",
             gps.time.hour(), gps.time.minute(), gps.time.second());
-        sdLog(timeStr, gps.location.lat(), gps.location.lng(), gps.speed.kmph());
+        sdLog(timeStr, nowMs, gps.location.lat(), gps.location.lng(), gps.speed.kmph());
     }
 
     if (!gpsOk) {
