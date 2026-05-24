@@ -196,7 +196,7 @@ UiScreen currentScreen = SCREEN_BOOT;
 UiScreen shutdownReturnScreen = SCREEN_BOOT;
 UiScreen wifiReturnScreen = SCREEN_READY;
 int      trackMenuHighlight = 0;
-uint8_t  brightnessIndex = 3;
+uint8_t  brightnessIndex = 0;  // 25% default — economia energia
 
 // Botão INICIAR LOG (tela pronta)
 #define ILOG_X  60
@@ -310,6 +310,17 @@ void configureGPS() {
 
     Serial.println("[GPS] Reset frio enviado, aguardando...");
     delay(500);
+
+    // UBX CFG-RATE: 200ms = 5Hz (economia vs 10Hz)
+    static const uint8_t rate5Hz[] = {
+        0xB5, 0x62, 0x06, 0x08, 0x06, 0x00,
+        0xC8, 0x00, 0x01, 0x00, 0x01, 0x00,
+        0xDE, 0x6A
+    };
+    gpsSerial.write(rate5Hz, sizeof(rate5Hz));
+    gpsSerial.flush();
+    delay(200);
+    Serial.println("[GPS] Rate 5Hz enviado");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1947,6 +1958,12 @@ void drawShutdownConfirm() {
 // ─────────────────────────────────────────────────────────────
 void setup() {
     Serial.begin(115200);
+
+    // Economia energia: CPU 80MHz (de 240) + WiFi off
+    setCpuFrequencyMhz(80);
+    WiFi.mode(WIFI_OFF);
+    btStop();
+
     pinMode(BOOT_BTN, INPUT_PULLUP);
     pinMode(TFT_BL, OUTPUT);
     analogWriteResolution(8);

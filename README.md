@@ -65,13 +65,15 @@ Construído para usar **no kart de verdade**: filtro de média móvel na velocid
 | Componente | Modelo | Função |
 |-----------|--------|--------|
 | MCU + Display | **ESP32-2432S028R (CYD)** | Cheap Yellow Display, ILI9341 320×240 touch, ESP32 dual-core 240MHz, 4MB flash |
-| GPS | **u-blox NEO-M8N** | 10 Hz, conexão UART2 (RX=22, TX=27) a 115200 baud |
+| GPS | **u-blox NEO-M8N** | 5 Hz, UART2 (RX=22, TX=27) a 115200 baud — **VCC alimentado direto pelo 5V do shield de bateria** (bypass do AMS1117 da CYD) |
 | Armazenamento | Cartão **microSD** | SoftSPI (SCK=18, MISO=19, MOSI=23, CS=5) |
 | Botão | **GPIO 0 (BOOT)** | Reset/programação |
 | Power | Shield 18650 ou USB | 5V → AMS1117 → 3.3V |
 | Case | **Impressão 3D PLA amarelo** | Design custom Kartup |
 
-> **Aviso de hardware**: o AMS1117-3.3 da CYD é dimensionado no limite. Adicionar GPS + SD + WiFi AP simultâneo estressa o regulador. Recomenda-se buck switching externo para uso prolongado.
+> **Aviso de hardware**: o AMS1117-3.3 da CYD é dimensionado no limite. Adicionar GPS + SD + WiFi AP simultâneo estressa o regulador (já queimou um nesta unidade — saída caiu para 2,75V).
+>
+> **Workaround aplicado**: VCC do NEO-M8N alimentado direto pelos 5V do shield de bateria, bypassando o AMS1117. O módulo M8N tem regulador onboard que aceita até 6V. Só TX/RX/GND continuam no conector CN1 da CYD.
 
 ---
 
@@ -231,6 +233,7 @@ Problemas resolvidos durante o desenvolvimento (documentados em `CLAUDE.md`):
 3. **GPS sem fix após config** — `configureGPS()` mudava baud mas se UBX não recebido, ficava dessincronizado. Solução: detecção automática de baud.
 4. **WiFi AP travando via Settings** — `httpServer.handleClient()` só chamado no `loop()`. Solução: chamar também em `waitForStart()`.
 5. **Bordas laranja no boot** — faixas vermelhas pareciam laranja. Solução: removidas, fundo limpo.
+6. **Display piscando com GPS conectado** — AMS1117-3.3 da CYD queimou (saída 2,75V), reg secundário OK (3,35V). GPS no rail 3.3V puxava picos que faziam o sistema brownout. Solução: VCC do GPS movido para 5V direto do shield (M8N aceita até 6V via regulador onboard). Adicional: CPU 80MHz, WiFi off no boot, GPS reduzido para 5Hz, backlight default 25%.
 
 ---
 
