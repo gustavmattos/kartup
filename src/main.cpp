@@ -45,17 +45,27 @@
 #define SETTINGS_BTN_H    38
 #define SETTINGS_TOUCH_PAD 8
 
-// Botão BRILHO na tela Settings
-#define BRIGHTNESS_BTN_X   14
-#define BRIGHTNESS_BTN_Y   44
-#define BRIGHTNESS_BTN_W  292
-#define BRIGHTNESS_BTN_H   42
+// Settings HUD tiles - grid 3x2 - tile 100x102 com gap 4px
+// Layout:
+//   col:    [   5..104  ] [ 109..208  ] [ 213..312  ]
+//   row 0:    01 BRT       02 WLAN       03 STG       y=27..128
+//   row 1:    04 NAV       05 SYS        06 PURGE     y=133..234
+#define TILE_W   100
+#define TILE_H   102
+#define TILE_TOP  27
+#define TILE_ROW2 133
 
-// Botão WiFi AP na tela Settings
-#define WIFI_AP_BTN_X      BRIGHTNESS_BTN_X
-#define WIFI_AP_BTN_Y     (BRIGHTNESS_BTN_Y + BRIGHTNESS_BTN_H + 10)
-#define WIFI_AP_BTN_W      BRIGHTNESS_BTN_W
-#define WIFI_AP_BTN_H      BRIGHTNESS_BTN_H
+// Tile 01 = BRILHO (mantém macros antigos p/ touch handler nao quebrar)
+#define BRIGHTNESS_BTN_X    5
+#define BRIGHTNESS_BTN_Y   TILE_TOP
+#define BRIGHTNESS_BTN_W   TILE_W
+#define BRIGHTNESS_BTN_H   TILE_H
+
+// Tile 02 = WiFi AP
+#define WIFI_AP_BTN_X     109
+#define WIFI_AP_BTN_Y     TILE_TOP
+#define WIFI_AP_BTN_W     TILE_W
+#define WIFI_AP_BTN_H     TILE_H
 
 // Botão VOLTAR no topo esquerdo
 #define BACK_BTN_X      6
@@ -141,6 +151,7 @@ int selectedTrack = 0;  // índice da pista selecionada
 #define C_GRAY      0x8C55   // #8888aa  cinza medio (labels visiveis)
 #define C_GRAY_DK   0x2948   // #2a2a40  cinza escuro (labels fracos)
 #define C_BORDER    0x2948   // #2a2a40  bordas (igual gray_dk)
+#define C_HUD_CYAN_DIM 0x01CA   // #003a55  cyan dim (grid HUD, brackets dim)
 // Tintas dim p/ badges (usar tft.color565 em runtime):
 //   RED_DIM   = tft.color565(60,  6, 14)
 //   GREEN_DIM = tft.color565( 0, 50, 22)
@@ -161,6 +172,10 @@ SdSoftSpi softSpi;
 SdFat32   sd;
 File32    logFile;
 bool      sdOk      = false;
+uint32_t  sdTotalMB    = 0;
+uint32_t  sdLogFiles   = 0;
+uint32_t  sdLogKB      = 0;
+bool      sdInfoCached = false;
 char      logPath[32];
 
 enum UiScreen {
@@ -811,99 +826,354 @@ void drawBootScreen() {
     tft.drawString("kartUp.pro", W/2, H - 12);
 }
 
-// Helper: desenha um item de settings com icon box tintada + badge
-static void drawSettingsItem(int x, int y, int w, int h,
-                             uint16_t iconBgTint,
-                             const uint16_t* iconBmp, int iconW, int iconH,
-                             const char* title, const char* desc,
-                             const char* badgeText, uint16_t badgeColor)
-{
-    // Card
-    tft.fillRoundRect(x, y, w, h, 8, C_PANEL);
-    tft.drawRoundRect(x, y, w, h, 8, C_BORDER);
+// ═════════════════════════════════════════════════════════════
+// TACTICAL HUD - Settings Screen (3x2 grid de tiles)
+// Icones desenhados com primitivas TFT (sem assets PNG)
+// ═════════════════════════════════════════════════════════════
 
-    // Icon box tintada a esquerda
-    const int iboxW = 28, iboxH = 28;
-    const int iboxX = x + 8;
-    const int iboxY = y + (h - iboxH) / 2;
-    tft.fillRoundRect(iboxX, iboxY, iboxW, iboxH, 6, iconBgTint);
-    tft.pushImage(iboxX + (iboxW - iconW) / 2,
-                  iboxY + (iboxH - iconH) / 2,
-                  iconW, iconH, iconBmp, iconBgTint);
+// ── Icones 20x20 desenhados com primitivas ──
+static void drawIcSun(int x, int y, uint16_t c) {
+    int cx = x + 10, cy = y + 10;
+    tft.drawCircle(cx, cy, 4, c);
+    tft.drawCircle(cx, cy, 3, c);
+    tft.fillRect(cx-1, cy-1, 2, 2, c);
+    // 8 raios
+    tft.drawFastVLine(cx, y,      2, c);
+    tft.drawFastVLine(cx, y+18,   2, c);
+    tft.drawFastHLine(x,    cy,   2, c);
+    tft.drawFastHLine(x+18, cy,   2, c);
+    tft.drawLine(x+3,  y+3,  x+5,  y+5,  c);
+    tft.drawLine(x+15, y+3,  x+13, y+5,  c);
+    tft.drawLine(x+3,  y+15, x+5,  y+13, c);
+    tft.drawLine(x+15, y+15, x+13, y+13, c);
+}
 
-    // Titulo + descricao
-    tft.setTextDatum(ML_DATUM);
-    tft.setTextFont(2);
-    tft.setTextColor(C_WHITE, C_PANEL);
-    tft.drawString(title, iboxX + iboxW + 10, y + 15);
+static void drawIcWifi(int x, int y, uint16_t c) {
+    int cx = x + 10;
+    // 3 arcos angulares (chevron)
+    tft.drawLine(x+1,  y+9,  cx, y+2, c);
+    tft.drawLine(cx,   y+2,  x+19, y+9, c);
+    tft.drawLine(x+3,  y+11, cx, y+5, c);
+    tft.drawLine(cx,   y+5,  x+17, y+11, c);
+    tft.drawLine(x+5,  y+13, cx, y+8, c);
+    tft.drawLine(cx,   y+8,  x+15, y+13, c);
+    // ponto base
+    tft.fillRect(cx-1, y+16, 2, 2, c);
+}
 
-    tft.setTextFont(1);
-    tft.setTextColor(C_GRAY, C_PANEL);
-    tft.drawString(desc, iboxX + iboxW + 10, y + 31);
+static void drawIcSd(int x, int y, uint16_t c) {
+    // Corpo com canto cortado (sup direito)
+    int x0 = x + 3, y0 = y + 2;
+    int w = 14, h = 16;
+    int notch = 3;
+    tft.drawFastHLine(x0, y0, w - notch, c);
+    tft.drawLine(x0 + w - notch, y0, x0 + w, y0 + notch, c);
+    tft.drawFastVLine(x0 + w, y0 + notch, h - notch, c);
+    tft.drawFastHLine(x0, y0 + h, w + 1, c);
+    tft.drawFastVLine(x0, y0, h + 1, c);
+    // 3 pinos no topo
+    tft.drawFastVLine(x0 + 3, y0 + 2, 3, c);
+    tft.drawFastVLine(x0 + 6, y0 + 2, 3, c);
+    tft.drawFastVLine(x0 + 9, y0 + 2, 3, c);
+    // 2 linhas de info dentro
+    tft.drawFastHLine(x0 + 2, y0 + 9,  10, c);
+    tft.drawFastHLine(x0 + 2, y0 + 12, 7,  c);
+}
 
-    // Badge de status (canto direito)
-    if (badgeText && badgeText[0]) {
-        tft.setTextFont(1);
-        int bw = tft.textWidth(badgeText) + 12;
-        int bh = 14;
-        int bx = x + w - bw - 22;
-        int by = y + (h - bh) / 2;
-        tft.fillRoundRect(bx, by, bw, bh, 4, C_BG);
-        tft.drawRoundRect(bx, by, bw, bh, 4, C_BORDER);
-        tft.setTextColor(badgeColor, C_BG);
-        tft.setTextDatum(MC_DATUM);
-        tft.drawString(badgeText, bx + bw/2, by + bh/2 + 1);
+static void drawIcGps(int x, int y, uint16_t c) {
+    int cx = x + 10, cy = y + 10;
+    // Quadrado externo tracejado
+    for (int i = -7; i <= 7; i += 3) {
+        tft.drawPixel(cx + i, cy - 7, c);
+        tft.drawPixel(cx + i, cy + 7, c);
+        tft.drawPixel(cx - 7, cy + i, c);
+        tft.drawPixel(cx + 7, cy + i, c);
     }
+    // Quadrado interno solido
+    tft.drawRect(cx - 3, cy - 3, 6, 6, c);
+    // Centro
+    tft.fillRect(cx - 1, cy - 1, 2, 2, c);
+    // Crosshairs cardinais
+    tft.drawFastVLine(cx, y,      2, c);
+    tft.drawFastVLine(cx, y + 18, 2, c);
+    tft.drawFastHLine(x,      cy, 2, c);
+    tft.drawFastHLine(x + 18, cy, 2, c);
+}
 
-    // Chevron
-    tft.setTextDatum(MR_DATUM);
-    tft.setTextFont(2);
-    tft.setTextColor(C_GRAY, C_PANEL);
-    tft.drawString(">", x + w - 8, y + h/2);
+static void drawIcCpu(int x, int y, uint16_t c) {
+    int cx = x + 10, cy = y + 10;
+    // Chip outer
+    tft.drawRect(cx - 6, cy - 6, 12, 12, c);
+    // Chip inner filled
+    tft.fillRect(cx - 3, cy - 3, 6, 6, c);
+    // Pernas - 3 em cada lado
+    for (int i = -3; i <= 3; i += 3) {
+        tft.drawFastVLine(cx + i, y,         2, c);  // top
+        tft.drawFastVLine(cx + i, y + 18,    2, c);  // bot
+        tft.drawFastHLine(x,         cy + i, 2, c);  // left
+        tft.drawFastHLine(x + 18,    cy + i, 2, c);  // right
+    }
+}
+
+static void drawIcTrash(int x, int y, uint16_t c) {
+    int x0 = x + 2;
+    int w  = 16;
+    // Tampa
+    tft.fillRect(x0, y + 3, w, 2, c);
+    // Pega
+    tft.drawRect(x0 + 5, y + 1, 6, 2, c);
+    // Corpo
+    tft.drawRect(x0 + 1, y + 5, w - 2, 13, c);
+    // 3 linhas internas
+    tft.drawFastVLine(x0 + 4,  y + 7, 9, c);
+    tft.drawFastVLine(x0 + 7,  y + 7, 9, c);
+    tft.drawFastVLine(x0 + 10, y + 7, 9, c);
+}
+
+typedef void (*IconFn)(int x, int y, uint16_t c);
+
+// ── Tile HUD: panel + brackets + header + icon + value + foot ──
+static void drawHudTile(int x, int y, int w, int h,
+                        uint16_t accent,
+                        const char* id, const char* status, uint16_t statusCol,
+                        IconFn iconFn, uint16_t iconCol,
+                        const char* value, uint16_t valueCol,
+                        bool isSlider, int sliderSegs,
+                        const char* footL, const char* footR)
+{
+    // Painel
+    tft.fillRect(x, y, w, h, C_PANEL);
+    tft.drawRect(x, y, w, h, C_GRAY_DK);
+
+    // Brackets nos 4 cantos (7px L, 2px thick) na cor accent
+    const int bl = 7;
+    // TL
+    tft.drawFastHLine(x,   y,   bl, accent);
+    tft.drawFastHLine(x,   y+1, bl, accent);
+    tft.drawFastVLine(x,   y,   bl, accent);
+    tft.drawFastVLine(x+1, y,   bl, accent);
+    // TR
+    tft.drawFastHLine(x+w-bl, y,   bl, accent);
+    tft.drawFastHLine(x+w-bl, y+1, bl, accent);
+    tft.drawFastVLine(x+w-1, y,   bl, accent);
+    tft.drawFastVLine(x+w-2, y,   bl, accent);
+    // BL
+    tft.drawFastHLine(x,   y+h-1, bl, accent);
+    tft.drawFastHLine(x,   y+h-2, bl, accent);
+    tft.drawFastVLine(x,   y+h-bl, bl, accent);
+    tft.drawFastVLine(x+1, y+h-bl, bl, accent);
+    // BR
+    tft.drawFastHLine(x+w-bl, y+h-1, bl, accent);
+    tft.drawFastHLine(x+w-bl, y+h-2, bl, accent);
+    tft.drawFastVLine(x+w-1, y+h-bl, bl, accent);
+    tft.drawFastVLine(x+w-2, y+h-bl, bl, accent);
+
+    // Header: ID (esq) + status (dir), Font 1
+    tft.setTextFont(1);
+    tft.setTextSize(1);
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(accent, C_PANEL);
+    tft.drawString(id, x + 5, y + 4);
+
+    tft.setTextDatum(TR_DATUM);
+    tft.setTextColor(statusCol, C_PANEL);
+    tft.drawString(status, x + w - 5, y + 4);
+
+    // Mid: icon + valor
+    iconFn(x + 6, y + 28, iconCol);
+
+    // Valor em Font 4 com glow (drawString 2x, offset 1px na cor accent dim)
+    tft.setTextFont(4);
+    tft.setTextDatum(ML_DATUM);
+    int valX = x + 32;
+    int valY = y + 38;
+    // Glow leve (mesma cor mas mais escura)
+    uint16_t glow = ((valueCol >> 1) & 0x7BEF);  // metade do brilho aprox
+    tft.setTextColor(glow, C_PANEL);
+    tft.drawString(value, valX + 1, valY + 1);
+    // Texto principal
+    tft.setTextColor(valueCol, C_PANEL);
+    tft.drawString(value, valX, valY);
+
+    // Footer: slider de 4 segs OU 2 textos (esq/dir)
+    if (isSlider) {
+        int sy = y + h - 12;
+        int sx = x + 5;
+        int sw = w - 10;
+        int segGap = 2;
+        int segW = (sw - 3 * segGap) / 4;
+        for (int i = 0; i < 4; i++) {
+            int sxi = sx + i * (segW + segGap);
+            if (i < sliderSegs) {
+                tft.fillRect(sxi, sy, segW, 6, accent);
+            } else {
+                tft.fillRect(sxi, sy, segW, 6, C_GRAY_DK);
+            }
+        }
+    } else {
+        tft.setTextFont(1);
+        tft.setTextDatum(BL_DATUM);
+        tft.setTextColor(C_GRAY, C_PANEL);
+        if (footL) tft.drawString(footL, x + 5, y + h - 5);
+        if (footR) {
+            tft.setTextDatum(BR_DATUM);
+            tft.drawString(footR, x + w - 5, y + h - 5);
+        }
+    }
+}
+
+void readSdInfo() {
+    if (sdInfoCached) return;
+    sdTotalMB = 0; sdLogFiles = 0; sdLogKB = 0;
+    if (!sdOk) {
+        SdSpiConfig cfg(SD_CS_PIN, DEDICATED_SPI, SD_SCK_MHZ(2), &softSpi);
+        if (!sd.begin(cfg)) { sdInfoCached = true; return; }
+        sdOk = true;
+    }
+    uint32_t sec = sd.card()->sectorCount();
+    sdTotalMB = sec / 2048;
+
+    File32 dir = sd.open("/");
+    File32 entry;
+    while (entry.openNext(&dir, O_READ)) {
+        char name[32];
+        entry.getName(name, sizeof(name));
+        if (strncmp(name, "gps_", 4) == 0) {
+            sdLogFiles++;
+            sdLogKB += entry.fileSize() / 1024;
+        }
+        entry.close();
+    }
+    dir.close();
+    sdInfoCached = true;
 }
 
 void drawSettingsScreen() {
     currentScreen = SCREEN_SETTINGS;
+    readSdInfo();
     tft.fillScreen(C_BG);
 
-    // Top bar
-    tft.fillRect(0, 0, W, TOP_H, C_PANEL);
-    tft.drawFastHLine(0, TOP_H,   W, C_RED_F1);
-    tft.drawFastHLine(0, TOP_H+1, W, C_RED_F1);
-    drawBackButton();
+    // Grid sutil de pontos no fundo (16x16) - vibe blueprint
+    for (int gx = 16; gx < W; gx += 16) {
+        for (int gy = 32; gy < H; gy += 16) {
+            tft.drawPixel(gx, gy, C_HUD_CYAN_DIM);
+        }
+    }
 
-    tft.setTextFont(2);
-    tft.setTextColor(C_WHITE, C_PANEL);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("Settings", W/2, TOP_H/2);
+    // ── TOP BAR ──
+    tft.fillRect(0, 0, W, 22, C_PANEL);
+    tft.drawFastHLine(0, 22, W, C_HUD_CYAN_DIM);
+    tft.drawFastHLine(0, 23, W, C_PANEL);  // espacador antes do grid
+    drawBackButton();  // existente: x=6 y=2 w=32 h=20
 
+    // KART**UP** // CONFIG
     tft.setTextFont(1);
-    tft.setTextColor(C_GRAY, C_BG);
+    tft.setTextSize(1);
     tft.setTextDatum(ML_DATUM);
-    tft.drawString("AJUSTES  DO  SISTEMA", 14, 36);
+    int tx = 44;
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.drawString("KART", tx, 11);
+    tx += tft.textWidth("KART");
+    tft.setTextColor(C_RED_F1, C_PANEL);
+    tft.drawString("UP", tx, 11);
+    tx += tft.textWidth("UP") + 4;
+    tft.setTextColor(C_GRAY_DK, C_PANEL);
+    tft.drawString("//", tx, 11);
+    tx += tft.textWidth("//") + 4;
+    tft.setTextColor(C_SPEED, C_PANEL);
+    tft.drawString("CONFIG", tx, 11);
 
-    // Item BRILHO - icon box amber, badge com % atual
-    const char* pct[4] = {"25%", "50%", "75%", "100%"};
-    drawSettingsItem(BRIGHTNESS_BTN_X, BRIGHTNESS_BTN_Y,
-                     BRIGHTNESS_BTN_W, BRIGHTNESS_BTN_H,
-                     tft.color565(60, 38, 6),
-                     settings_icon, SETTINGS_ICON_W, SETTINGS_ICON_H,
-                     "Brilho", "Ajustar iluminacao da tela",
-                     pct[brightnessIndex], C_AMBER);
+    // Right: GPS N SAT  ·  FIX LOCK/WAIT
+    char fixStr[16];
+    snprintf(fixStr, sizeof(fixStr), "FIX %s", gpsOk ? "LOCK" : "WAIT");
+    tft.setTextDatum(MR_DATUM);
+    tft.setTextColor(gpsOk ? C_GREEN : C_AMBER, C_PANEL);
+    int fixW = tft.textWidth(fixStr);
+    tft.drawString(fixStr, W - 6, 11);
 
-    // Item WiFi - icon box ciano, badge ON/OFF
-    drawSettingsItem(WIFI_AP_BTN_X, WIFI_AP_BTN_Y,
-                     WIFI_AP_BTN_W, WIFI_AP_BTN_H,
-                     tft.color565(0, 36, 60),
-                     wifi_icon, WIFI_ICON_W, WIFI_ICON_H,
-                     "WiFi AP", "Arquivos pelo navegador",
-                     wifiMode ? "ON" : "OFF",
-                     wifiMode ? C_GREEN : C_GRAY);
+    char gpsStr[16];
+    snprintf(gpsStr, sizeof(gpsStr), "GPS %d SAT", satellites);
+    tft.setTextColor(C_GREEN, C_PANEL);
+    tft.drawString(gpsStr, W - 6 - fixW - 10, 11);
 
-    tft.setTextFont(1);
-    tft.setTextColor(C_GRAY_DK, C_BG);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("kartUp.pro", W/2, H - 14);
+    // ── TILES ──
+    // Strings dinamicas
+    char brtStr[8];
+    snprintf(brtStr, sizeof(brtStr), "%d%%", (brightnessIndex + 1) * 25);
+    char satStr[8];
+    snprintf(satStr, sizeof(satStr), "%d", satellites);
+
+    // 01 // BRT (slider amber, valor brilho atual)
+    drawHudTile(5, TILE_TOP, TILE_W, TILE_H,
+                C_AMBER,
+                "01//BRT", "ADJ", C_AMBER,
+                drawIcSun, C_AMBER,
+                brtStr, C_AMBER,
+                true, brightnessIndex + 1,
+                NULL, NULL);
+
+    // 02 // WLAN (toggle wifi mode)
+    drawHudTile(109, TILE_TOP, TILE_W, TILE_H,
+                C_SPEED,
+                "02//WLAN", wifiMode ? "ON" : "OFF", wifiMode ? C_GREEN : C_GRAY,
+                drawIcWifi, C_SPEED,
+                wifiMode ? "ON" : "OFF", wifiMode ? C_GREEN : C_SPEED,
+                false, 0,
+                "AP MODE", ":80");
+
+    // 03 // STG (SD card: total + logs + tamanho)
+    char sdVal[12];
+    char sdFootL[12];
+    char sdFootR[12];
+    if (sdTotalMB == 0) {
+        snprintf(sdVal,   sizeof(sdVal),   "N/A");
+        snprintf(sdFootL, sizeof(sdFootL), "NO SD");
+        snprintf(sdFootR, sizeof(sdFootR), "--");
+    } else if (sdTotalMB >= 1024) {
+        snprintf(sdVal, sizeof(sdVal), "%uGB", (unsigned)(sdTotalMB / 1024));
+    } else {
+        snprintf(sdVal, sizeof(sdVal), "%uMB", (unsigned)sdTotalMB);
+    }
+    if (sdTotalMB > 0) {
+        snprintf(sdFootL, sizeof(sdFootL), "%u LOG", (unsigned)sdLogFiles);
+        if (sdLogKB >= 1024) snprintf(sdFootR, sizeof(sdFootR), "%uMB", (unsigned)(sdLogKB / 1024));
+        else                 snprintf(sdFootR, sizeof(sdFootR), "%uKB", (unsigned)sdLogKB);
+    }
+    drawHudTile(213, TILE_TOP, TILE_W, TILE_H,
+                C_GREEN,
+                "03//STG", sdTotalMB ? "RDY" : "OFF", sdTotalMB ? C_GREEN : C_GRAY,
+                drawIcSd, C_GREEN,
+                sdVal, C_GREEN,
+                false, 0,
+                sdFootL, sdFootR);
+
+    // 04 // NAV (GPS info)
+    drawHudTile(5, TILE_ROW2, TILE_W, TILE_H,
+                C_SPEED,
+                "04//NAV", gpsOk ? "LOCK" : "WAIT", gpsOk ? C_GREEN : C_AMBER,
+                drawIcGps, C_SPEED,
+                satStr, C_SPEED,
+                false, 0,
+                "10Hz", "115k2");
+
+    // 05 // SYS (firmware version)
+    drawHudTile(109, TILE_ROW2, TILE_W, TILE_H,
+                C_PURPLE,
+                "05//SYS", "OK", C_GREEN,
+                drawIcCpu, C_PURPLE,
+                "v2.0", C_PURPLE,
+                false, 0,
+                "240MHz", "ESP32");
+
+    // 06 // PURGE (delete logs - destrutivo)
+    drawHudTile(213, TILE_ROW2, TILE_W, TILE_H,
+                C_RED,
+                "06//PURGE", "!", C_RED,
+                drawIcTrash, C_RED,
+                "DEL", C_RED,
+                false, 0,
+                "DELETE ALL", NULL);
+
 }
 
 // Calibração aproximada CYD ESP32-2432S028R (rotation 1)
@@ -1364,6 +1634,7 @@ void drawWiFiScreen() {
 
 void startLogging() {
     initSD();
+    sdInfoCached = false;
     resetLapState();
     lapActive    = true;
     lapStartMs   = millis();
@@ -1381,6 +1652,7 @@ void startLogging() {
 void stopLogging() {
     if (sdOk && logFile) { logFile.flush(); logFile.close(); }
     sdOk      = false;
+    sdInfoCached = false;
     isLogging = false;
     Serial.println("[LOG] Encerrado");
     drawReadyScreen();
