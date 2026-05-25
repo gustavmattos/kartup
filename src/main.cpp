@@ -311,16 +311,16 @@ void configureGPS() {
     Serial.println("[GPS] Reset frio enviado, aguardando...");
     delay(500);
 
-    // UBX CFG-RATE: 200ms = 5Hz (economia vs 10Hz)
-    static const uint8_t rate5Hz[] = {
+    // UBX CFG-RATE: 100ms = 10Hz
+    static const uint8_t rate10Hz[] = {
         0xB5, 0x62, 0x06, 0x08, 0x06, 0x00,
-        0xC8, 0x00, 0x01, 0x00, 0x01, 0x00,
-        0xDE, 0x6A
+        0x64, 0x00, 0x01, 0x00, 0x01, 0x00,
+        0x7A, 0x12
     };
-    gpsSerial.write(rate5Hz, sizeof(rate5Hz));
+    gpsSerial.write(rate10Hz, sizeof(rate10Hz));
     gpsSerial.flush();
     delay(200);
-    Serial.println("[GPS] Rate 5Hz enviado");
+    Serial.println("[GPS] Rate 10Hz enviado");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1234,9 +1234,19 @@ bool inButton(int sx, int sy) {
            sy >= BTN_Y && sy <= BTN_Y + BTN_H;
 }
 
+#define LEDC_BL_CH 0
 void applyBrightness() {
     uint8_t duty = BRIGHTNESS_LEVELS[brightnessIndex];
-    analogWrite(TFT_BL, duty);
+    // 100% = HIGH digital (bypass PWM no maximo p/ garantir)
+    if (duty == 255) {
+        ledcDetachPin(TFT_BL);
+        pinMode(TFT_BL, OUTPUT);
+        digitalWrite(TFT_BL, HIGH);
+    } else {
+        pinMode(TFT_BL, OUTPUT);
+        ledcAttachPin(TFT_BL, LEDC_BL_CH);
+        ledcWrite(LEDC_BL_CH, duty);
+    }
     Serial.printf("[BRIGHTNESS] idx=%d duty=%d\n", brightnessIndex, duty);
 }
 
@@ -1965,9 +1975,7 @@ void setup() {
     btStop();
 
     pinMode(BOOT_BTN, INPUT_PULLUP);
-    pinMode(TFT_BL, OUTPUT);
-    analogWriteResolution(8);
-    analogWriteFrequency(20000);
+    ledcSetup(LEDC_BL_CH, 5000, 8);
     applyBrightness();
 
 #ifndef USE_MOCK_DATA

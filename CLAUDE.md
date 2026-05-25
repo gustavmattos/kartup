@@ -116,3 +116,8 @@ C_BORDER  = 0x18C3  // bordas suaves
 3. **Demo sem dados iniciais** — `lapActive` iniciava false e levava 65s para primeira volta. Solução: `lapActive=true` + `lapStartMs=millis()` no setup.
 4. **GPS sem fix após mudança de baud** — `configureGPS()` mudava para 115200 mas se o comando UBX não era recebido o módulo ficava em 9600 e o ESP32 em 115200, sem comunicação. Solução: `configureGPS()` detecta baud automaticamente antes de reconfigurar.
 5. **GPS oscilando entre 0 e 4 satélites em movimento** — antena cerâmica patch embutida tem ganho baixo para uso veicular. Solução paliativa: filtro de média móvel na velocidade. Solução definitiva: antena ativa externa com conector U.FL.
+
+## What's Next
+**Gatilho:** só implementar item desta lista quando o usuário disser exatamente "quais os proximos passos claude". Não executar proativamente.
+
+- Padronizar arquivo CSV conforme padrão Alfano.
