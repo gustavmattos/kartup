@@ -1,4 +1,4 @@
-#ifdef TESTE_GPS
+#if defined(TESTE_GPS) && !defined(UCENTER_BRIDGE)
 
 #include <Arduino.h>
 #include <TinyGPSPlus.h>
@@ -162,4 +162,4 @@ void loop() {
     }
 }
 
-#endif // TESTE_GPS
+#endif // TESTE_GPS && !UCENTER_BRIDGE

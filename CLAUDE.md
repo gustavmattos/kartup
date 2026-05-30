@@ -20,11 +20,12 @@ O ESP32 **não tem RAM suficiente para um sprite full-screen** (320×240×2 = 15
 ```
 cyd-clock/
 ├── src/
-│   ├── main.cpp          ← código principal
-│   ├── teste_gps.cpp     ← diagnóstico GPS (compilado só com env:teste_gps)
-│   ├── logo.h            ← logo KartUp (120×120 px, RGB565 byte-swapped, PROGMEM)
-│   ├── f1_speed_font.h   ← fonte Bahnschrift grande (VLW, PROGMEM)
-│   └── f1_time_font.h    ← fonte Bahnschrift tempos (VLW, PROGMEM)
+│   ├── main.cpp              ← código principal
+│   ├── teste_gps.cpp         ← diagnóstico GPS (compilado só com env:teste_gps, excluído em ucenter_bridge)
+│   ├── ucenter_bridge.cpp    ← ponte UART para configurar NEO-M8N via u-center (env:ucenter_bridge)
+│   ├── logo.h                ← logo KartUp (120×120 px, RGB565 byte-swapped, PROGMEM)
+│   ├── f1_speed_font.h       ← fonte Bahnschrift grande (VLW, PROGMEM)
+│   └── f1_time_font.h        ← fonte Bahnschrift tempos (VLW, PROGMEM)
 ├── platformio.ini
 ├── CLAUDE.md
 └── (raiz do repo)
@@ -36,6 +37,7 @@ Pinos e flags passados via build_flags (sem User_Setup.h separado):
 - MISO=12, MOSI=13, SCLK=14, CS=15, DC=2, RST=-1, BL=21
 - Fontes habilitadas: GLCD, Font2, Font4, Font6, Font7, Font8, GFXFF, SMOOTH_FONT
 - Lib: `bodmer/TFT_eSPI@^2.5.33`, `mikalhart/TinyGPSPlus@^1.0.3`
+- Environments: `cyd` (produção), `teste_gps` (diagnóstico), `ucenter_bridge` (config GPS via u-center), `cyd_debug` (validação fix)
 
 ## Interface Atual: Dark Cockpit F1
 Uma única interface no estilo Fórmula 1:
