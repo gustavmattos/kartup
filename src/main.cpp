@@ -244,6 +244,13 @@ unsigned long recordTimer   = 0;
 #define RECORD_FLASH_MS  250
 #define RECORD_FLASHES   6
 
+// ─── OVERLAY ÚLTIMA VOLTA ────────────────────────────────────
+bool     showLapOverlay    = false;
+uint32_t lapOverlayStartMs = 0;
+uint32_t overlayLapMs      = 0;
+bool     overlayIsNewBest  = false;
+bool     cacheOverlayActive = false;
+
 // ─── FILTRO DE VELOCIDADE (média móvel) ──────────────────────
 #define SPEED_SAMPLES 5
 float   speedBuf[SPEED_SAMPLES] = {};
@@ -553,6 +560,49 @@ void drawDeltaNum() {
 // TEMPO ATUAL — elemento dominante (Font 7 = 7 segmentos)
 // ─────────────────────────────────────────────────────────────
 void drawCurrentLap() {
+    uint32_t now = millis();
+
+    // Overlay: exibe tempo da volta recém-encerrada por 3s
+    if (showLapOverlay && (now - lapOverlayStartMs) >= 3000) {
+        showLapOverlay     = false;
+        cacheOverlayActive = false;
+        cacheCurLap        = UINT32_MAX; // força redesenho do tempo atual
+    }
+
+    if (showLapOverlay) {
+        if (cacheOverlayActive) return;
+        cacheOverlayActive = true;
+
+        tft.fillRect(TIME_X, TIME_Y, TIME_W, TIME_H, C_BG);
+        uint16_t col = overlayIsNewBest ? C_GREEN : C_RED_F1;
+
+        uint32_t ms = overlayLapMs;
+        int m = ms / 60000;
+        int s = (ms % 60000) / 1000;
+        int c = (ms % 1000) / 10;
+        char msStr[12], csStr[8];
+        snprintf(msStr, sizeof(msStr), "%d:%02d.", m, s);
+        snprintf(csStr, sizeof(csStr), "%02d", c);
+
+        tft.setTextDatum(TR_DATUM);
+        tft.setTextColor(col, C_BG);
+        tft.setTextFont(7);
+        tft.setTextSize(1);
+        tft.drawString(msStr, 236, TIME_Y);
+
+        tft.setTextFont(6);
+        tft.setTextColor(col, C_BG);
+        tft.setTextDatum(TL_DATUM);
+        tft.drawString(csStr, 240, TIME_Y + 10);
+
+        tft.setTextFont(1);
+        tft.setTextSize(1);
+        tft.setTextColor(C_GRAY_DK, C_BG);
+        tft.setTextDatum(BR_DATUM);
+        tft.drawString("ULTIMA VOLTA", W - 8, TIME_Y + TIME_H - 2);
+        return;
+    }
+
     // Atualiza a cada ~20ms (centésimos visíveis)
     if (curLapMs != 0 && (int32_t)(curLapMs - cacheCurLap) < 20
         && cacheCurLap != UINT32_MAX && !newBest) return;
@@ -715,6 +765,11 @@ void triggerNewLap() {
             recordFlashes = 0;
             recordTimer = now;
         }
+        overlayLapMs       = lap;
+        overlayIsNewBest   = newBest;
+        showLapOverlay     = true;
+        lapOverlayStartMs  = now;
+        cacheOverlayActive = false;
     }
 
     lapStartMs = now;

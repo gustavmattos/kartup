@@ -233,7 +233,7 @@ Problemas resolvidos durante o desenvolvimento (documentados em `CLAUDE.md`):
 3. **GPS sem fix após config** — `configureGPS()` mudava baud mas se UBX não recebido, ficava dessincronizado. Solução: detecção automática de baud.
 4. **WiFi AP travando via Settings** — `httpServer.handleClient()` só chamado no `loop()`. Solução: chamar também em `waitForStart()`.
 5. **Bordas laranja no boot** — faixas vermelhas pareciam laranja. Solução: removidas, fundo limpo.
-6. **Display piscando com GPS conectado** — AMS1117-3.3 da CYD queimou (saída 2,75V), reg secundário OK (3,35V). GPS no rail 3.3V puxava picos que faziam o sistema brownout. Solução: VCC do GPS movido para 5V direto do shield (M8N aceita até 6V via regulador onboard). Adicional: CPU 80MHz, WiFi off no boot, GPS reduzido para 5Hz, backlight default 25%.
+6. **Display piscando com GPS conectado** — AMS1117-3.3 da CYD queimou (saída 2,75V), reg secundário OK (3,35V). GPS no rail 3.3V puxava picos que faziam o sistema brownout. Solução definitiva: VCC do GPS movido para 5V direto do shield (M8N aceita até 6V via regulador onboard). GPS permanece a 10Hz (CFG-RATE 100ms).
 
 ---
 
