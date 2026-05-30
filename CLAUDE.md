@@ -75,9 +75,17 @@ C_BORDER  = 0x18C3  // bordas suaves
 
 ## Lógica de Volta
 - `triggerNewLap()` — registra volta, incrementa contador, verifica novo recorde
-- `lapStartMs` — timestamp de início da volta atual
-- `curLapMs = millis() - lapStartMs` — tempo corrente
+- `lapStartMs` — timestamp de início da volta atual; atualizado imediatamente em `triggerNewLap()`, antes de qualquer display
+- `curLapMs = millis() - lapStartMs` — tempo corrente; atualizado no loop independente do display
 - `deltaS` — diferença em segundos vs melhor volta (demo usa valor simulado)
+
+### Overlay de última volta (3s)
+Ao cruzar a linha de chegada, `drawCurrentLap()` exibe o tempo da volta encerrada por 3 segundos antes de voltar ao cronômetro atual. A próxima volta já está contando em background via `lapStartMs`.
+- `showLapOverlay` (bool) — ativa overlay
+- `lapOverlayStartMs` (uint32_t) — timestamp de início do overlay
+- `overlayLapMs` (uint32_t) — tempo da volta a exibir
+- `overlayIsNewBest` (bool) — determina cor: `C_GREEN` se recorde, `C_RED_F1` se pior
+- `cacheOverlayActive` (bool) — anti-flickering: redraw único durante os 3s
 
 ## Fontes
 - `tft.setTextFont(7)` — 7 segmentos 48px, só suporta `0-9 : . -` (perfeito para tempos)
