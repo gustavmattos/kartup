@@ -185,7 +185,9 @@ enum UiScreen {
     SCREEN_READY,
     SCREEN_WIFI,
     SCREEN_LOGGING,
-    SCREEN_SHUTDOWN_CONFIRM
+    SCREEN_SHUTDOWN_CONFIRM,
+    SCREEN_HISTORY,
+    SCREEN_SESSION_SUMMARY
 };
 
 // ─── ESTADO DA APLICAÇÃO ─────────────────────────────────────
@@ -250,6 +252,11 @@ uint32_t lapOverlayStartMs = 0;
 uint32_t overlayLapMs      = 0;
 bool     overlayIsNewBest  = false;
 bool     cacheOverlayActive = false;
+
+// ─── SESSÃO — meta gravado no stopLogging ────────────────────
+float sessionMaxSpeed  = 0.0f;
+int   sessionBestLapNum = 0;
+char  sessionDate[12]  = "";   // "DD/MM/YYYY", preenchido no sdLog ao 1º fix
 
 // ─── FILTRO DE VELOCIDADE (média móvel) ──────────────────────
 #define SPEED_SAMPLES 5
@@ -764,6 +771,7 @@ void triggerNewLap() {
             recordAnim  = true;
             recordFlashes = 0;
             recordTimer = now;
+            sessionBestLapNum = lapCount;
         }
         overlayLapMs       = lap;
         overlayIsNewBest   = newBest;
@@ -1207,11 +1215,11 @@ void drawSettingsScreen() {
     }
     drawHudTile(213, TILE_TOP, TILE_W, TILE_H,
                 C_GREEN,
-                "03//STG", sdTotalMB ? "RDY" : "OFF", sdTotalMB ? C_GREEN : C_GRAY,
+                "03//STG", sdTotalMB ? "HIST" : "OFF", sdTotalMB ? C_GREEN : C_GRAY,
                 drawIcSd, C_GREEN,
                 sdVal, C_GREEN,
                 false, 0,
-                sdFootL, sdFootR);
+                sdFootL, sdTotalMB ? ">" : sdFootR);
 
     // 04 // NAV (GPS info)
     drawHudTile(5, TILE_ROW2, TILE_W, TILE_H,
@@ -1483,6 +1491,249 @@ int waitForTrackSelection() {
     }
 }
 
+// ─────────────────────────────────────────────────────────────
+// HISTÓRICO DE SESSÕES
+// ─────────────────────────────────────────────────────────────
+
+#define HIST_MAX_SESSIONS  8
+#define HIST_ROW_H        26
+#define HIST_LIST_Y       28
+
+struct SessionMeta {
+    char basename[16];   // "gps_095"
+    char date[12];       // "DD/MM/YYYY"
+    int  laps;
+    uint32_t bestMs;
+    int  bestLap;
+    float maxKmh;
+    bool hasMeta;
+};
+
+static SessionMeta histSessions[HIST_MAX_SESSIONS];
+static int         histCount = 0;
+static int         histSelected = -1;
+
+static bool parseMeta(const char* metaPath, SessionMeta& s) {
+    File32 f = sd.open(metaPath, O_READ);
+    if (!f) return false;
+    char line[48];
+    while (f.available()) {
+        int n = 0;
+        while (f.available() && n < (int)sizeof(line) - 1) {
+            char c = f.read();
+            if (c == '\n') break;
+            if (c != '\r') line[n++] = c;
+        }
+        line[n] = '\0';
+        if (strncmp(line, "date=", 5) == 0)     strncpy(s.date, line + 5, sizeof(s.date));
+        else if (strncmp(line, "laps=", 5) == 0) s.laps = atoi(line + 5);
+        else if (strncmp(line, "best_ms=", 8) == 0) s.bestMs = (uint32_t)atol(line + 8);
+        else if (strncmp(line, "best_lap=", 9) == 0) s.bestLap = atoi(line + 9);
+        else if (strncmp(line, "max_kmh=", 8) == 0)  s.maxKmh = atof(line + 8);
+    }
+    f.close();
+    return true;
+}
+
+static void loadHistorySessions() {
+    histCount = 0;
+    if (!sdOk) {
+        SdSpiConfig cfg(SD_CS_PIN, DEDICATED_SPI, SD_SCK_MHZ(2), &softSpi);
+        if (!sd.begin(cfg)) return;
+        sdOk = true;
+    }
+    File32 dir = sd.open("/");
+    File32 entry;
+    while (entry.openNext(&dir, O_READ) && histCount < HIST_MAX_SESSIONS) {
+        char name[32];
+        entry.getName(name, sizeof(name));
+        if (strncmp(name, "gps_", 4) == 0) {
+            char* ext = strrchr(name, '.');
+            if (ext && strcmp(ext, ".csv") == 0) {
+                SessionMeta& s = histSessions[histCount];
+                *ext = '\0';
+                strncpy(s.basename, name, sizeof(s.basename));
+                s.laps = 0; s.bestMs = 0; s.bestLap = 0; s.maxKmh = 0; s.date[0] = '\0';
+                char metaPath[32];
+                snprintf(metaPath, sizeof(metaPath), "%s.meta", name);
+                s.hasMeta = parseMeta(metaPath, s);
+                histCount++;
+            }
+        }
+        entry.close();
+    }
+    dir.close();
+}
+
+static void drawHistoryRow(int idx, int y, bool selected) {
+    SessionMeta& s = histSessions[idx];
+    uint16_t bg     = selected ? C_PANEL2 : C_PANEL;
+    uint16_t accent = selected ? C_RED_F1 : C_BORDER;
+    tft.fillRect(4, y, W - 8, HIST_ROW_H - 2, bg);
+    tft.drawRect(4, y, W - 8, HIST_ROW_H - 2, accent);
+
+    // Faixa lateral
+    tft.fillRect(4, y, 4, HIST_ROW_H - 2, accent);
+
+    // Nome: "gps095 - DD/MM/YYYY" ou "gps095 - sem dados"
+    char label[32];
+    char numPart[8];
+    strncpy(numPart, s.basename + 4, sizeof(numPart)); // "095"
+    if (s.hasMeta && s.date[0]) {
+        snprintf(label, sizeof(label), "gps%s - %s", numPart, s.date);
+    } else {
+        snprintf(label, sizeof(label), "gps%s - sem dados", numPart);
+    }
+
+    tft.setTextFont(1);
+    tft.setTextSize(1);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(C_WHITE, bg);
+    tft.drawString(label, 14, y + HIST_ROW_H / 2);
+
+    // Voltas à direita
+    if (s.hasMeta) {
+        char lapStr[8];
+        snprintf(lapStr, sizeof(lapStr), "%dV", s.laps);
+        tft.setTextDatum(MR_DATUM);
+        tft.setTextColor(C_GRAY, bg);
+        tft.drawString(lapStr, W - 10, y + HIST_ROW_H / 2);
+    }
+}
+
+void drawHistoryScreen() {
+    currentScreen = SCREEN_HISTORY;
+    tft.fillScreen(C_BG);
+    tft.fillRect(0, 0, W, 24, C_PANEL);
+    tft.drawFastHLine(0, 24, W, C_RED_F1);
+    tft.drawFastHLine(0, 25, W, C_RED_F1);
+    drawBackButton();
+
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString("HISTORICO DE SESSOES", 46, 12);
+
+    loadHistorySessions();
+
+    if (histCount == 0) {
+        tft.setTextFont(2);
+        tft.setTextColor(C_GRAY, C_BG);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString("Nenhuma sessao no SD", W / 2, H / 2);
+        return;
+    }
+
+    for (int i = 0; i < histCount; i++) {
+        drawHistoryRow(i, HIST_LIST_Y + i * HIST_ROW_H, false);
+    }
+
+    tft.setTextFont(1);
+    tft.setTextColor(C_GRAY_DK, C_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("toque na sessao para ver resumo", W / 2, H - 6);
+}
+
+void drawSessionSummary(int idx) {
+    currentScreen = SCREEN_SESSION_SUMMARY;
+    histSelected = idx;
+    SessionMeta& s = histSessions[idx];
+
+    tft.fillScreen(C_BG);
+    tft.fillRect(0, 0, W, 24, C_PANEL);
+    tft.drawFastHLine(0, 24, W, C_RED_F1);
+    tft.drawFastHLine(0, 25, W, C_RED_F1);
+    drawBackButton();
+
+    // Título: nome da sessão
+    char title[24];
+    char numPart[8];
+    strncpy(numPart, s.basename + 4, sizeof(numPart));
+    snprintf(title, sizeof(title), "gps%s", numPart);
+    tft.setTextFont(2);
+    tft.setTextColor(C_WHITE, C_PANEL);
+    tft.setTextDatum(ML_DATUM);
+    tft.drawString(title, 46, 12);
+    if (s.hasMeta && s.date[0]) {
+        tft.setTextDatum(MR_DATUM);
+        tft.setTextColor(C_GRAY, C_PANEL);
+        tft.drawString(s.date, W - 8, 12);
+    }
+
+    if (!s.hasMeta) {
+        tft.setTextFont(2);
+        tft.setTextColor(C_GRAY, C_BG);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString("Sem dados de resumo", W / 2, H / 2);
+        tft.setTextFont(1);
+        tft.setTextColor(C_GRAY_DK, C_BG);
+        tft.drawString("(sessao gravada antes do v2.1)", W / 2, H / 2 + 18);
+        return;
+    }
+
+    // Linhas de dados
+    const int rowY[]   = { 50, 90, 130, 170 };
+    const int labelX   = 16;
+    const int valueX   = W - 16;
+
+    auto drawRow = [&](int y, const char* label, const char* value, uint16_t vc) {
+        tft.fillRect(8, y - 8, W - 16, 30, C_PANEL);
+        tft.drawRect(8, y - 8, W - 16, 30, C_BORDER);
+        tft.setTextFont(1);
+        tft.setTextSize(1);
+        tft.setTextDatum(ML_DATUM);
+        tft.setTextColor(C_GRAY, C_PANEL);
+        tft.drawString(label, labelX, y + 2);
+        tft.setTextFont(2);
+        tft.setTextDatum(MR_DATUM);
+        tft.setTextColor(vc, C_PANEL);
+        tft.drawString(value, valueX, y + 7);
+    };
+
+    char buf[24];
+
+    snprintf(buf, sizeof(buf), "%d", s.laps);
+    drawRow(rowY[0], "TOTAL DE VOLTAS", buf, C_WHITE);
+
+    if (s.bestMs > 0) {
+        snprintf(buf, sizeof(buf), "%s  (V%d)", formatTime(s.bestMs).c_str(), s.bestLap);
+    } else {
+        snprintf(buf, sizeof(buf), "--");
+    }
+    drawRow(rowY[1], "MELHOR VOLTA", buf, C_AMBER);
+
+    snprintf(buf, sizeof(buf), "%.0f km/h", s.maxKmh);
+    drawRow(rowY[2], "VEL. MAXIMA", buf, C_SPEED);
+
+    // Arquivo CSV
+    char csvName[20];
+    snprintf(csvName, sizeof(csvName), "%s.csv", s.basename);
+    drawRow(rowY[3], "ARQUIVO", csvName, C_GRAY);
+}
+
+void handleHistoryTouch(int sx, int sy) {
+    if (currentScreen == SCREEN_HISTORY) {
+        if (isBackPressed(sx, sy)) {
+            while (ts.getPoint().z > 100) delay(10);
+            drawSettingsScreen();
+            return;
+        }
+        for (int i = 0; i < histCount; i++) {
+            int rowY = HIST_LIST_Y + i * HIST_ROW_H;
+            if (sy >= rowY && sy <= rowY + HIST_ROW_H - 2 && sx >= 4 && sx <= W - 4) {
+                while (ts.getPoint().z > 100) delay(10);
+                drawSessionSummary(i);
+                return;
+            }
+        }
+    } else if (currentScreen == SCREEN_SESSION_SUMMARY) {
+        if (isBackPressed(sx, sy)) {
+            while (ts.getPoint().z > 100) delay(10);
+            drawHistoryScreen();
+        }
+    }
+}
+
 void waitForStart() {
     Serial.println("[TOUCH] aguardando START...");
     while (ts.getPoint().z > 100) delay(10);  // debounce
@@ -1495,12 +1746,17 @@ void waitForStart() {
         touchToScreen(p, sx, sy);
         Serial.printf("[TOUCH] raw(%d,%d) → screen(%d,%d) btn=%d\n",
             p.x, p.y, sx, sy, inButton(sx, sy) ? 1 : 0);
+        if (currentScreen == SCREEN_HISTORY || currentScreen == SCREEN_SESSION_SUMMARY) {
+            handleHistoryTouch(sx, sy);
+            continue;
+        }
         if (currentScreen == SCREEN_SETTINGS) {
-            Serial.printf("[SETTINGS_TOUCH] screen(%d,%d) back=%d brightness=%d wifi=%d\n",
+            Serial.printf("[SETTINGS_TOUCH] screen(%d,%d) back=%d brightness=%d wifi=%d history=%d\n",
                 sx, sy,
                 isBackPressed(sx, sy) ? 1 : 0,
                 inRect(sx, sy, BRIGHTNESS_BTN_X, BRIGHTNESS_BTN_Y, BRIGHTNESS_BTN_W, BRIGHTNESS_BTN_H, 10) ? 1 : 0,
-                inRect(sx, sy, WIFI_AP_BTN_X, WIFI_AP_BTN_Y, WIFI_AP_BTN_W, WIFI_AP_BTN_H, 10) ? 1 : 0);
+                inRect(sx, sy, WIFI_AP_BTN_X, WIFI_AP_BTN_Y, WIFI_AP_BTN_W, WIFI_AP_BTN_H, 10) ? 1 : 0,
+                inRect(sx, sy, 213, TILE_TOP, TILE_W, TILE_H, 10) ? 1 : 0);
             if (isBackPressed(sx, sy)) {
                 while (ts.getPoint().z > 100) delay(10);
                 drawBootScreen();
@@ -1514,6 +1770,12 @@ void waitForStart() {
             if (inRect(sx, sy, WIFI_AP_BTN_X, WIFI_AP_BTN_Y, WIFI_AP_BTN_W, WIFI_AP_BTN_H, 10)) {
                 while (ts.getPoint().z > 100) delay(10);
                 enterWiFiMode();
+                continue;
+            }
+            // Tile 03//STG → Histórico de Sessões
+            if (inRect(sx, sy, 213, TILE_TOP, TILE_W, TILE_H, 10)) {
+                while (ts.getPoint().z > 100) delay(10);
+                drawHistoryScreen();
                 continue;
             }
             continue;
@@ -1569,15 +1831,25 @@ void initSD() {
         sdOk = false;
         return;
     }
-    logFile.println("time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s");
+    logFile.println("date_utc,time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s");
     logFile.flush();
     Serial.printf("[SD] OK — Log: %s\n", logPath);
 }
 
 void sdLog(const char* timeStr, uint32_t ms, double lat, double lon, float spd) {
     if (!sdOk || !logFile) return;
-    char buf[112];
-    snprintf(buf, sizeof(buf), "%s,%lu,%.7f,%.7f,%.1f,%d,%lu,%.2f",
+
+    // Captura data GPS na primeira oportunidade
+    if (sessionDate[0] == '\0' && gps.date.isValid()) {
+        snprintf(sessionDate, sizeof(sessionDate), "%02d/%02d/%04d",
+            gps.date.day(), gps.date.month(), gps.date.year());
+    }
+
+    if (spd > sessionMaxSpeed) sessionMaxSpeed = spd;
+
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%s,%s,%lu,%.7f,%.7f,%.1f,%d,%lu,%.2f",
+        sessionDate[0] ? sessionDate : "??/??/????",
         timeStr, ms, lat, lon, spd, lapCount, curLapMs, deltaS);
     logFile.println(buf);
     // Flush a cada 10s evita perda de dados sem travar o loop
@@ -1712,6 +1984,9 @@ void startLogging() {
     initSD();
     sdInfoCached = false;
     resetLapState();
+    sessionMaxSpeed   = 0.0f;
+    sessionBestLapNum = 0;
+    sessionDate[0]    = '\0';
     lapActive    = true;
     lapStartMs   = millis();
     demoLapStart = millis();
@@ -1727,6 +2002,32 @@ void startLogging() {
 
 void stopLogging() {
     if (sdOk && logFile) { logFile.flush(); logFile.close(); }
+
+    // Grava .meta com resumo da sessão para tela de histórico
+    if (sdOk && lapCount > 0) {
+        char metaPath[32];
+        strncpy(metaPath, logPath, sizeof(metaPath));
+        char* dot = strrchr(metaPath, '.');
+        if (dot) strcpy(dot, ".meta");
+        File32 metaFile = sd.open(metaPath, O_WRITE | O_CREAT | O_TRUNC);
+        if (metaFile) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "date=%s", sessionDate[0] ? sessionDate : "??/??/????");
+            metaFile.println(buf);
+            snprintf(buf, sizeof(buf), "laps=%d", lapCount);
+            metaFile.println(buf);
+            snprintf(buf, sizeof(buf), "best_ms=%lu", (unsigned long)bestLapMs);
+            metaFile.println(buf);
+            snprintf(buf, sizeof(buf), "best_lap=%d", sessionBestLapNum);
+            metaFile.println(buf);
+            snprintf(buf, sizeof(buf), "max_kmh=%.1f", sessionMaxSpeed);
+            metaFile.println(buf);
+            metaFile.flush();
+            metaFile.close();
+            Serial.printf("[META] Gravado: %s\n", metaPath);
+        }
+    }
+
     sdOk      = false;
     sdInfoCached = false;
     isLogging = false;

@@ -61,8 +61,9 @@ C_BORDER  = 0x18C3  // bordas suaves
 - **`#define USE_MOCK_DATA`** (comentado por padrão) — dados simulados, sem GPS. Velocidade oscila 0–95 km/h, delta ±2s, volta automática a cada 65s. Demo inicia imediatamente (lapActive=true no setup). Para ativar: descomentar a linha no topo de main.cpp.
 - **GPS real** (padrão) — NEO-M8N via UART2. Velocidade real com filtro de média móvel (5 amostras). Linha de chegada definida por coordenadas FINISH_LAT/LON com raio de 8m.
 - **WiFi AP** — ativado por toque em "WiFi / Baixar CSV" na tela pronta ou pela tela `Settings`. Cria rede `KartUp-Telemetria` (aberta). Acesse `http://192.168.4.1` para listar e baixar arquivos CSV do SD. Sair pelo botão na tela. Logging não ocorre durante WiFi ativo.
-- **Settings** — ícone de engrenagem na tela inicial abre uma tela `Settings` em formato de lista. Itens atuais: `Brilho` e `WiFi AP`.
-- **Brilho** — dentro de `Settings`, o item `Brilho` abre um modal com níveis `25%`, `50%`, `75%` e `100%`. Controle do backlight via `analogWrite()` no `TFT_BL` com frequência global de 20 kHz.
+- **Settings** — ícone de engrenagem na tela inicial abre uma tela `Settings` em formato HUD 3×2. Tiles: `01//BRT` (brilho), `02//WLAN` (WiFi AP), `03//STG` (histórico de sessões), `04//NAV` (GPS info), `05//SYS` (versão), `06//PURGE` (apagar logs).
+- **Brilho** — tile `01//BRT` abre modal com níveis `25%`, `50%`, `75%` e `100%`. Controle via LEDC PWM no `TFT_BL` (GPIO 21), 5 kHz, canal 0.
+- **Histórico de Sessões** — tile `03//STG` abre lista de sessões salvas no SD (até 8). Nome exibido: `gps095 - DD/MM/YYYY`. Toque na sessão exibe resumo: total de voltas, melhor volta com número da volta, velocidade máxima, nome do arquivo CSV. Sessões antigas sem `.meta` exibem "Sem dados de resumo". Voltar retorna para Settings.
 - **Voltar** — ícone `<` no canto superior esquerdo em todas as telas, exceto inicial, logging e WiFi. Na tela pronta volta para seleção de pista; na seleção de pista volta para a tela inicial; em modais fecha o modal e retorna para a tela anterior.
 
 ## Configuração GPS
@@ -74,10 +75,16 @@ C_BORDER  = 0x18C3  // bordas suaves
 - Velocidade zerada automaticamente se perder fix
 
 ## Lógica de Volta
-- `triggerNewLap()` — registra volta, incrementa contador, verifica novo recorde
+- `triggerNewLap()` — registra volta, incrementa contador, verifica novo recorde; atualiza `sessionBestLapNum` quando bate recorde
 - `lapStartMs` — timestamp de início da volta atual; atualizado imediatamente em `triggerNewLap()`, antes de qualquer display
 - `curLapMs = millis() - lapStartMs` — tempo corrente; atualizado no loop independente do display
 - `deltaS` — diferença em segundos vs melhor volta (demo usa valor simulado)
+
+## Log CSV e Meta de Sessão
+- **Header CSV (v2.1+):** `date_utc,time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s`
+- `date_utc` — capturado de `gps.date` na primeira linha com fix; `??/??/????` se sem fix
+- **Arquivo `.meta`** — gravado por `stopLogging()` ao encerrar sessão (apenas se `lapCount > 0`). Formato key=value: `date`, `laps`, `best_ms`, `best_lap`, `max_kmh`. Usado pela tela de histórico; zero parsing de CSV em runtime.
+- Variáveis de sessão: `sessionMaxSpeed` (float), `sessionBestLapNum` (int), `sessionDate[12]` (char) — inicializadas em `startLogging()`, populadas durante logging, gravadas em `stopLogging()`.
 
 ### Overlay de última volta (3s)
 Ao cruzar a linha de chegada, `drawCurrentLap()` exibe o tempo da volta encerrada por 3 segundos antes de voltar ao cronômetro atual. A próxima volta já está contando em background via `lapStartMs`.
