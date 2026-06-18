@@ -84,6 +84,9 @@ C_BORDER  = 0x18C3  // bordas suaves
 ## Log CSV e Meta de Sessão
 - **Header CSV (v2.1+):** `date_utc,time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s`
 - `date_utc` — capturado de `gps.date` na primeira linha com fix; `??/??/????` se sem fix
+- `time_utc` — formato `HH:MM:SS.cc` (centésimos via `gps.time.centisecond()`). 10 linhas por segundo terão timestamps distintos. Usar coluna `millis` como referência primária de tempo (1ms resolução).
+- **Flush SD:** `sdLog()` não faz flush manual — SdFat auto-flush a cada setor cheio (~7 linhas / ~700ms). `triggerNewLap()` chama `logFile.flush()` a cada volta para garantir commit ao cruzar a linha. Perda máxima em crash: ~700ms de dados.
+- **Diagnóstico GPS no serial:** `[LOG] ms=... dt=... age=...` a cada linha gravada; `[LOG_SKIP] fix=... age=...` quando `fixFresh=false` bloqueia o log. Útil para diagnosticar lacunas no CSV.
 - **Arquivo `.meta`** — gravado por `stopLogging()` ao encerrar sessão (apenas se `lapCount > 0`). Formato key=value: `date`, `laps`, `best_ms`, `best_lap`, `max_kmh`. Usado pela tela de histórico; zero parsing de CSV em runtime.
 - Variáveis de sessão: `sessionMaxSpeed` (float), `sessionBestLapNum` (int), `sessionDate[12]` (char) — inicializadas em `startLogging()`, populadas durante logging, gravadas em `stopLogging()`.
 
@@ -133,6 +136,7 @@ Ao cruzar a linha de chegada, `drawCurrentLap()` exibe o tempo da volta encerrad
 4. **GPS sem fix após mudança de baud** — `configureGPS()` mudava para 115200 mas se o comando UBX não era recebido o módulo ficava em 9600 e o ESP32 em 115200, sem comunicação. Solução: `configureGPS()` detecta baud automaticamente antes de reconfigurar.
 5. **GPS oscilando entre 0 e 4 satélites em movimento** — antena cerâmica patch embutida tem ganho baixo para uso veicular. Solução paliativa: filtro de média móvel na velocidade. Solução definitiva: antena ativa externa com conector U.FL.
 6. **Volta zero / out-lap contado como Volta 1** — `startLogging()` iniciava `lapActive=true`, então a primeira passagem na linha gravava o tempo desde o início da sessão (saída do box) como Volta 1. Solução: GPS real inicia com `lapActive=false`; primeira passagem só ativa o timer. Display e CSV usam `lapCount + 1` para mostrar número da volta atual a partir de 1.
+7. **`time_utc` sem sub-segundo no CSV** — formato `HH:MM:SS` fazia 10 linhas a 10Hz aparecerem com timestamp igual, parecendo que o log não estava a 10Hz. Solução: formato alterado para `HH:MM:SS.cc` usando `gps.time.centisecond()`. Usar `millis` como referência primária.
 
 ## What's Next
 **Gatilho:** só implementar item desta lista quando o usuário disser exatamente "quais os proximos passos claude". Não executar proativamente.
