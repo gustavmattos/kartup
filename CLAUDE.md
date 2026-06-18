@@ -63,7 +63,7 @@ C_BORDER  = 0x18C3  // bordas suaves
 - **WiFi AP** — ativado por toque em "WiFi / Baixar CSV" na tela pronta ou pela tela `Settings`. Cria rede `KartUp-Telemetria` (aberta). Acesse `http://192.168.4.1` para listar e baixar arquivos CSV do SD. Sair pelo botão na tela. Logging não ocorre durante WiFi ativo.
 - **Settings** — ícone de engrenagem na tela inicial abre uma tela `Settings` em formato HUD 3×2. Tiles: `01//BRT` (brilho), `02//WLAN` (WiFi AP), `03//STG` (histórico de sessões), `04//NAV` (GPS info), `05//SYS` (versão), `06//PURGE` (apagar logs).
 - **Brilho** — tile `01//BRT` abre modal com níveis `25%`, `50%`, `75%` e `100%`. Controle via LEDC PWM no `TFT_BL` (GPIO 21), 5 kHz, canal 0.
-- **Histórico de Sessões** — tile `03//STG` abre lista de sessões salvas no SD (até 8). Nome exibido: `gps095 - DD/MM/YYYY`. Toque na sessão exibe resumo: total de voltas, melhor volta com número da volta, velocidade máxima, nome do arquivo CSV. Sessões antigas sem `.meta` exibem "Sem dados de resumo". Voltar retorna para Settings.
+- **Histórico de Sessões** — tile `03//STG` abre lista rolável de até 32 sessões salvas no SD (`HIST_MAX_SESSIONS=32`, `HIST_VISIBLE_ROWS=7`). Carregamento em duas fases: fase 1 exibe nomes imediatamente (`loadHistoryBasenames()`), fase 2 carrega `.meta` progressivamente (`loadHistoryMeta(idx)`). Scroll por arraste com inércia (fator de fricção 0.88). Scrollbar lateral indica posição. Toque (<12px movimento) na linha abre resumo da sessão. Nome exibido: `gps095 - DD/MM/YYYY`. Resumo: total de voltas, melhor volta com número da volta, velocidade máxima, nome do arquivo CSV. Sessões antigas sem `.meta` exibem "Sem dados de resumo". Voltar retorna para Settings.
 - **Voltar** — ícone `<` no canto superior esquerdo em todas as telas, exceto inicial, logging e WiFi. Na tela pronta volta para seleção de pista; na seleção de pista volta para a tela inicial; em modais fecha o modal e retorna para a tela anterior.
 
 ## Configuração GPS
@@ -79,6 +79,7 @@ C_BORDER  = 0x18C3  // bordas suaves
 - `lapStartMs` — timestamp de início da volta atual; atualizado imediatamente em `triggerNewLap()`, antes de qualquer display
 - `curLapMs = millis() - lapStartMs` — tempo corrente; atualizado no loop independente do display
 - `deltaS` — diferença em segundos vs melhor volta (demo usa valor simulado)
+- **Out-lap (GPS real):** `startLogging()` inicia com `lapActive=false`. Primeira passagem na linha de chegada apenas ativa o timer (`lapActive=true`, `lapStartMs=now`) sem gravar volta — é a saída do box. Segunda passagem grava Volta 1. `lapCount` conta voltas completadas; display e CSV usam `lapCount + 1` = número da volta atual. Demo mode mantém `lapActive=true` (protegido por `#ifdef USE_MOCK_DATA`).
 
 ## Log CSV e Meta de Sessão
 - **Header CSV (v2.1+):** `date_utc,time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s`
@@ -131,6 +132,7 @@ Ao cruzar a linha de chegada, `drawCurrentLap()` exibe o tempo da volta encerrad
 3. **Demo sem dados iniciais** — `lapActive` iniciava false e levava 65s para primeira volta. Solução: `lapActive=true` + `lapStartMs=millis()` no setup.
 4. **GPS sem fix após mudança de baud** — `configureGPS()` mudava para 115200 mas se o comando UBX não era recebido o módulo ficava em 9600 e o ESP32 em 115200, sem comunicação. Solução: `configureGPS()` detecta baud automaticamente antes de reconfigurar.
 5. **GPS oscilando entre 0 e 4 satélites em movimento** — antena cerâmica patch embutida tem ganho baixo para uso veicular. Solução paliativa: filtro de média móvel na velocidade. Solução definitiva: antena ativa externa com conector U.FL.
+6. **Volta zero / out-lap contado como Volta 1** — `startLogging()` iniciava `lapActive=true`, então a primeira passagem na linha gravava o tempo desde o início da sessão (saída do box) como Volta 1. Solução: GPS real inicia com `lapActive=false`; primeira passagem só ativa o timer. Display e CSV usam `lapCount + 1` para mostrar número da volta atual a partir de 1.
 
 ## What's Next
 **Gatilho:** só implementar item desta lista quando o usuário disser exatamente "quais os proximos passos claude". Não executar proativamente.

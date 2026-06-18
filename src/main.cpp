@@ -510,15 +510,16 @@ void drawSpeed() {
 // NÚMERO DE VOLTA
 // ─────────────────────────────────────────────────────────────
 void drawLapCount() {
-    if (lapCount == cacheLapCnt) return;
-    cacheLapCnt = lapCount;
+    int displayLap = lapActive ? lapCount + 1 : lapCount;
+    if (displayLap == cacheLapCnt) return;
+    cacheLapCnt = displayLap;
 
     tft.fillRect(LAP_X, MID_Y + 2, LAP_W, 16, C_BG);
     tft.setTextFont(2);
     tft.setTextSize(1);
     tft.setTextColor(C_WHITE, C_BG);
     tft.setTextDatum(ML_DATUM);
-    tft.drawString(String(lapCount), LAP_X, MID_Y + 10);
+    tft.drawString(String(displayLap), LAP_X, MID_Y + 10);
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -784,6 +785,8 @@ void triggerNewLap() {
     lapActive  = true;
     curLapMs   = 0;
     cacheCurLap = UINT32_MAX;
+
+    if (sdOk && logFile) logFile.flush();
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1495,9 +1498,13 @@ int waitForTrackSelection() {
 // HISTÓRICO DE SESSÕES
 // ─────────────────────────────────────────────────────────────
 
-#define HIST_MAX_SESSIONS  8
+#define HIST_MAX_SESSIONS  200
 #define HIST_ROW_H        26
 #define HIST_LIST_Y       28
+#define HIST_VISIBLE_ROWS  7
+#define HIST_SB_X         (W - 9)   // scrollbar x
+#define HIST_SB_W          6        // scrollbar width
+#define HIST_LIST_W       (W - 8 - HIST_SB_W - 4)  // row width, deixa espaço p/ scrollbar
 
 struct SessionMeta {
     char basename[16];   // "gps_095"
@@ -1512,6 +1519,7 @@ struct SessionMeta {
 static SessionMeta histSessions[HIST_MAX_SESSIONS];
 static int         histCount = 0;
 static int         histSelected = -1;
+static int         histScrollOffset = 0;
 
 static bool parseMeta(const char* metaPath, SessionMeta& s) {
     File32 f = sd.open(metaPath, O_READ);
@@ -1535,7 +1543,114 @@ static bool parseMeta(const char* metaPath, SessionMeta& s) {
     return true;
 }
 
-static void loadHistorySessions() {
+// Lê CSV e extrai resumo da sessão; grava .meta ao final para cache
+static bool parseCsvForMeta(SessionMeta& s) {
+    char csvPath[32];
+    snprintf(csvPath, sizeof(csvPath), "%s.csv", s.basename);
+    File32 f = sd.open(csvPath, O_READ);
+    if (!f) return false;
+
+    char line[160];
+    bool header     = true;
+    float maxSpd    = 0.0f;
+    int   curLapGrp = -1;
+    uint32_t curGrpMax  = 0;
+    uint32_t bestMs     = 0;
+    int      completedLaps = 0;
+    int      bestLapNum    = 0;
+
+    // Índices de coluna descobertos no header (default = v2.1+)
+    int colDate = 0, colSpd = 5, colLap = 6, colLapMs = 7;
+
+    while (f.available()) {
+        int n = 0;
+        while (f.available() && n < (int)sizeof(line) - 1) {
+            char c = f.read();
+            if (c == '\n') break;
+            if (c != '\r') line[n++] = c;
+        }
+        line[n] = '\0';
+        if (n == 0) continue;
+
+        // Tokeniza (modifica line in-place)
+        char* fields[12] = {};
+        int fi = 0;
+        char* tok = line;
+        while (*tok && fi < 12) {
+            fields[fi++] = tok;
+            while (*tok && *tok != ',') tok++;
+            if (*tok) { *tok = '\0'; tok++; }
+        }
+
+        if (header) {
+            header = false;
+            // Detecta colunas pelo nome do header
+            for (int i = 0; i < fi; i++) {
+                if (strcmp(fields[i], "date_utc") == 0 || strcmp(fields[i], "date") == 0) colDate = i;
+                else if (strcmp(fields[i], "speed_kmh") == 0 || strcmp(fields[i], "spd") == 0) colSpd = i;
+                else if (strcmp(fields[i], "lap") == 0) colLap = i;
+                else if (strcmp(fields[i], "lap_ms") == 0) colLapMs = i;
+            }
+            continue;
+        }
+
+        if (fi <= max(max(colDate, colSpd), max(colLap, colLapMs))) continue;
+
+        if (s.date[0] == '\0' && fields[colDate][0] && fields[colDate][0] != '?')
+            strncpy(s.date, fields[colDate], sizeof(s.date) - 1);
+
+        float spd = atof(fields[colSpd]);
+        if (spd > maxSpd) maxSpd = spd;
+
+        int lapNum     = atoi(fields[colLap]);
+        uint32_t lapMs = (uint32_t)atol(fields[colLapMs]);
+
+        if (lapNum != curLapGrp) {
+            // Fecha grupo anterior — grupo 1 = out-lap (pula), todos outros = volta completa
+            if (curLapGrp > 1 && curGrpMax > 5000) { // mínimo 5s para ser volta válida
+                completedLaps++;
+                if (bestMs == 0 || curGrpMax < bestMs) {
+                    bestMs     = curGrpMax;
+                    bestLapNum = completedLaps;
+                }
+            }
+            curLapGrp  = lapNum;
+            curGrpMax  = 0;
+        }
+        if (lapMs > curGrpMax) curGrpMax = lapMs;
+    }
+    f.close();
+
+    // Último grupo aberto = volta atual incompleta → não conta
+    s.laps    = completedLaps;
+    s.maxKmh  = maxSpd;
+    s.bestMs  = bestMs;
+    s.bestLap = bestLapNum;
+    s.hasMeta = (s.laps > 0);
+
+    Serial.printf("[CSV] %s: laps=%d best=%lums bestLap=%d maxSpd=%.1f\n",
+        s.basename, s.laps, (unsigned long)s.bestMs, s.bestLap, s.maxKmh);
+
+    // Grava .meta para evitar re-parse futuro
+    if (s.hasMeta) {
+        char metaPath[32];
+        snprintf(metaPath, sizeof(metaPath), "%s.meta", s.basename);
+        File32 mf = sd.open(metaPath, O_WRITE | O_CREAT | O_TRUNC);
+        if (mf) {
+            char buf[48];
+            snprintf(buf, sizeof(buf), "date=%s", s.date);   mf.println(buf);
+            snprintf(buf, sizeof(buf), "laps=%d", s.laps);   mf.println(buf);
+            snprintf(buf, sizeof(buf), "best_ms=%lu", (unsigned long)s.bestMs); mf.println(buf);
+            snprintf(buf, sizeof(buf), "best_lap=%d", s.bestLap); mf.println(buf);
+            snprintf(buf, sizeof(buf), "max_kmh=%.1f", s.maxKmh); mf.println(buf);
+            mf.flush(); mf.close();
+        }
+    }
+    return s.hasMeta;
+}
+
+// Fase 1: só coleta nomes dos arquivos CSV (rápido)
+static void loadHistoryBasenames() {
     histCount = 0;
     if (!sdOk) {
         SdSpiConfig cfg(SD_CS_PIN, DEDICATED_SPI, SD_SCK_MHZ(2), &softSpi);
@@ -1553,32 +1668,49 @@ static void loadHistorySessions() {
                 SessionMeta& s = histSessions[histCount];
                 *ext = '\0';
                 strncpy(s.basename, name, sizeof(s.basename));
-                s.laps = 0; s.bestMs = 0; s.bestLap = 0; s.maxKmh = 0; s.date[0] = '\0';
-                char metaPath[32];
-                snprintf(metaPath, sizeof(metaPath), "%s.meta", name);
-                s.hasMeta = parseMeta(metaPath, s);
+                s.laps = 0; s.bestMs = 0; s.bestLap = 0; s.maxKmh = 0;
+                s.date[0] = '\0'; s.hasMeta = false;
                 histCount++;
             }
         }
         entry.close();
     }
     dir.close();
+    // Ordena decrescente por basename (gps_099 primeiro)
+    for (int i = 0; i < histCount - 1; i++) {
+        for (int j = i + 1; j < histCount; j++) {
+            if (strcmp(histSessions[i].basename, histSessions[j].basename) < 0) {
+                SessionMeta tmp = histSessions[i];
+                histSessions[i] = histSessions[j];
+                histSessions[j] = tmp;
+            }
+        }
+    }
+}
+
+// Fase 2: lê .meta de uma sessão e redesenha a linha (chamado progressivamente)
+static void loadHistoryMeta(int idx) {
+    SessionMeta& s = histSessions[idx];
+    char metaPath[32];
+    snprintf(metaPath, sizeof(metaPath), "%s.meta", s.basename);
+    s.hasMeta = parseMeta(metaPath, s);
+}
+
+static void loadHistorySessions() {
+    loadHistoryBasenames();
 }
 
 static void drawHistoryRow(int idx, int y, bool selected) {
     SessionMeta& s = histSessions[idx];
     uint16_t bg     = selected ? C_PANEL2 : C_PANEL;
     uint16_t accent = selected ? C_RED_F1 : C_BORDER;
-    tft.fillRect(4, y, W - 8, HIST_ROW_H - 2, bg);
-    tft.drawRect(4, y, W - 8, HIST_ROW_H - 2, accent);
-
-    // Faixa lateral
+    tft.fillRect(4, y, HIST_LIST_W, HIST_ROW_H - 2, bg);
+    tft.drawRect(4, y, HIST_LIST_W, HIST_ROW_H - 2, accent);
     tft.fillRect(4, y, 4, HIST_ROW_H - 2, accent);
 
-    // Nome: "gps095 - DD/MM/YYYY" ou "gps095 - sem dados"
     char label[32];
     char numPart[8];
-    strncpy(numPart, s.basename + 4, sizeof(numPart)); // "095"
+    strncpy(numPart, s.basename + 4, sizeof(numPart));
     if (s.hasMeta && s.date[0]) {
         snprintf(label, sizeof(label), "gps%s - %s", numPart, s.date);
     } else {
@@ -1591,18 +1723,50 @@ static void drawHistoryRow(int idx, int y, bool selected) {
     tft.setTextColor(C_WHITE, bg);
     tft.drawString(label, 14, y + HIST_ROW_H / 2);
 
-    // Voltas à direita
     if (s.hasMeta) {
         char lapStr[8];
         snprintf(lapStr, sizeof(lapStr), "%dV", s.laps);
         tft.setTextDatum(MR_DATUM);
         tft.setTextColor(C_GRAY, bg);
-        tft.drawString(lapStr, W - 10, y + HIST_ROW_H / 2);
+        tft.drawString(lapStr, 4 + HIST_LIST_W - 4, y + HIST_ROW_H / 2);
     }
+}
+
+static void drawHistoryScrollbar() {
+    if (histCount <= HIST_VISIBLE_ROWS) return;
+    int trackH = HIST_VISIBLE_ROWS * HIST_ROW_H;
+    int trackY = HIST_LIST_Y;
+    // Track
+    tft.fillRect(HIST_SB_X, trackY, HIST_SB_W, trackH, C_PANEL);
+    // Thumb
+    int thumbH = max(10, trackH * HIST_VISIBLE_ROWS / histCount);
+    int maxOff = histCount - HIST_VISIBLE_ROWS;
+    int thumbY = trackY + (trackH - thumbH) * histScrollOffset / maxOff;
+    tft.fillRect(HIST_SB_X, thumbY, HIST_SB_W, thumbH, C_BORDER);
+    // Indicadores de mais conteúdo
+    if (histScrollOffset > 0)
+        tft.fillTriangle(HIST_SB_X + HIST_SB_W/2, trackY - 5,
+                         HIST_SB_X, trackY - 1,
+                         HIST_SB_X + HIST_SB_W, trackY - 1, C_GRAY);
+    if (histScrollOffset + HIST_VISIBLE_ROWS < histCount)
+        tft.fillTriangle(HIST_SB_X + HIST_SB_W/2, trackY + trackH + 5,
+                         HIST_SB_X, trackY + trackH + 1,
+                         HIST_SB_X + HIST_SB_W, trackY + trackH + 1, C_GRAY);
+}
+
+static void redrawHistoryList() {
+    // Limpa área de lista + scrollbar
+    tft.fillRect(0, HIST_LIST_Y, W, HIST_VISIBLE_ROWS * HIST_ROW_H + 8, C_BG);
+    int visible = min(HIST_VISIBLE_ROWS, histCount - histScrollOffset);
+    for (int i = 0; i < visible; i++) {
+        drawHistoryRow(histScrollOffset + i, HIST_LIST_Y + i * HIST_ROW_H, false);
+    }
+    drawHistoryScrollbar();
 }
 
 void drawHistoryScreen() {
     currentScreen = SCREEN_HISTORY;
+    histScrollOffset = 0;
     tft.fillScreen(C_BG);
     tft.fillRect(0, 0, W, 24, C_PANEL);
     tft.drawFastHLine(0, 24, W, C_RED_F1);
@@ -1614,7 +1778,8 @@ void drawHistoryScreen() {
     tft.setTextDatum(ML_DATUM);
     tft.drawString("HISTORICO DE SESSOES", 46, 12);
 
-    loadHistorySessions();
+    // Fase 1: nomes rápido
+    loadHistoryBasenames();
 
     if (histCount == 0) {
         tft.setTextFont(2);
@@ -1624,14 +1789,24 @@ void drawHistoryScreen() {
         return;
     }
 
-    for (int i = 0; i < histCount; i++) {
-        drawHistoryRow(i, HIST_LIST_Y + i * HIST_ROW_H, false);
-    }
+    // Desenha esqueleto imediatamente
+    redrawHistoryList();
 
     tft.setTextFont(1);
     tft.setTextColor(C_GRAY_DK, C_BG);
     tft.setTextDatum(MC_DATUM);
-    tft.drawString("toque na sessao para ver resumo", W / 2, H - 6);
+    tft.drawString("arraste para rolar", W / 2, H - 6);
+
+    // Fase 2: carrega meta progressivamente só para linhas visíveis primeiro
+    int visible = min(HIST_VISIBLE_ROWS, histCount);
+    for (int i = 0; i < visible; i++) {
+        loadHistoryMeta(i);
+        drawHistoryRow(i, HIST_LIST_Y + i * HIST_ROW_H, false);
+    }
+    // Carrega o resto em background (fora da tela visível)
+    for (int i = visible; i < histCount; i++) {
+        loadHistoryMeta(i);
+    }
 }
 
 void drawSessionSummary(int idx) {
@@ -1661,14 +1836,19 @@ void drawSessionSummary(int idx) {
     }
 
     if (!s.hasMeta) {
+        // Tenta extrair dados do CSV (sessões antigas sem .meta)
         tft.setTextFont(2);
         tft.setTextColor(C_GRAY, C_BG);
         tft.setTextDatum(MC_DATUM);
-        tft.drawString("Sem dados de resumo", W / 2, H / 2);
-        tft.setTextFont(1);
-        tft.setTextColor(C_GRAY_DK, C_BG);
-        tft.drawString("(sessao gravada antes do v2.1)", W / 2, H / 2 + 18);
-        return;
+        tft.drawString("Lendo CSV...", W / 2, H / 2);
+        bool ok = parseCsvForMeta(s);
+        if (!ok) {
+            tft.fillRect(0, HIST_LIST_Y, W, H - HIST_LIST_Y, C_BG);
+            tft.drawString("Sem dados de resumo", W / 2, H / 2);
+            return;
+        }
+        // Dados extraídos — redesenha sumário com dados reais (cai no código abaixo)
+        tft.fillRect(0, HIST_LIST_Y, W, H - HIST_LIST_Y, C_BG);
     }
 
     // Linhas de dados
@@ -1713,19 +1893,74 @@ void drawSessionSummary(int idx) {
 
 void handleHistoryTouch(int sx, int sy) {
     if (currentScreen == SCREEN_HISTORY) {
-        if (isBackPressed(sx, sy)) {
-            while (ts.getPoint().z > 100) delay(10);
-            drawSettingsScreen();
+        int startY  = sy;
+        int lastY   = sy;
+        int prevY   = sy;
+        uint32_t lastT = millis();
+        float velocity = 0.0f; // linhas/ms, positivo = scroll down (offset decresce)
+
+        // Rastreia dedo e calcula velocidade instantânea
+        while (true) {
+            TS_Point pp = ts.getPoint();
+            if (pp.z < 80) break;
+            int nx, ny;
+            touchToScreen(pp, nx, ny);
+            uint32_t now = millis();
+            uint32_t dt  = now - lastT;
+            if (dt >= 8) {
+                // velocidade em linhas/ms (positivo = arrastar p/ baixo = offset diminui)
+                velocity = (float)(ny - lastY) / (float)(dt * HIST_ROW_H);
+                prevY  = lastY;
+                lastY  = ny;
+                lastT  = now;
+            }
+            delay(4);
+        }
+
+        int totalDy = lastY - startY;
+
+        // Tap simples (movimento pequeno)
+        if (abs(totalDy) < 12) {
+            if (isBackPressed(sx, sy)) { drawSettingsScreen(); return; }
+            for (int i = 0; i < HIST_VISIBLE_ROWS; i++) {
+                int realIdx = histScrollOffset + i;
+                if (realIdx >= histCount) break;
+                int rowY = HIST_LIST_Y + i * HIST_ROW_H;
+                if (sy >= rowY && sy <= rowY + HIST_ROW_H - 2 && sx >= 4 && sx <= HIST_SB_X - 2) {
+                    drawSessionSummary(realIdx);
+                    return;
+                }
+            }
             return;
         }
-        for (int i = 0; i < histCount; i++) {
-            int rowY = HIST_LIST_Y + i * HIST_ROW_H;
-            if (sy >= rowY && sy <= rowY + HIST_ROW_H - 2 && sx >= 4 && sx <= W - 4) {
-                while (ts.getPoint().z > 100) delay(10);
-                drawSessionSummary(i);
-                return;
+
+        // Inércia pós-swipe
+        float pos    = (float)histScrollOffset;
+        float maxPos = (float)max(0, histCount - HIST_VISIBLE_ROWS);
+        // velocity negativa = arrastar p/ cima = offset aumenta
+        float vel    = -velocity; // linhas/ms no sentido do scroll
+
+        while (fabsf(vel) > 0.002f) {
+            // Para se usuário tocar de novo
+            if (ts.getPoint().z > 150) break;
+
+            vel  *= 0.88f; // fricção
+            pos  += vel * 20.0f; // 20ms de frame
+
+            if (pos < 0.0f)    { pos = 0.0f;    vel = 0.0f; }
+            if (pos > maxPos)  { pos = maxPos;   vel = 0.0f; }
+
+            int newOff = (int)(pos + 0.5f);
+            if (newOff != histScrollOffset) {
+                histScrollOffset = newOff;
+                redrawHistoryList();
             }
+            delay(20);
         }
+        // Snap final
+        histScrollOffset = (int)(pos + 0.5f);
+        histScrollOffset = max(0, min(histScrollOffset, (int)maxPos));
+
     } else if (currentScreen == SCREEN_SESSION_SUMMARY) {
         if (isBackPressed(sx, sy)) {
             while (ts.getPoint().z > 100) delay(10);
@@ -1832,6 +2067,7 @@ void initSD() {
         return;
     }
     logFile.println("date_utc,time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s");
+    // time_utc format: HH:MM:SS.cc (centiseconds from GPS)
     logFile.flush();
     Serial.printf("[SD] OK — Log: %s\n", logPath);
 }
@@ -1850,14 +2086,9 @@ void sdLog(const char* timeStr, uint32_t ms, double lat, double lon, float spd) 
     char buf[128];
     snprintf(buf, sizeof(buf), "%s,%s,%lu,%.7f,%.7f,%.1f,%d,%lu,%.2f",
         sessionDate[0] ? sessionDate : "??/??/????",
-        timeStr, ms, lat, lon, spd, lapCount, curLapMs, deltaS);
+        timeStr, ms, lat, lon, spd, lapCount + 1, curLapMs, deltaS);
     logFile.println(buf);
-    // Flush a cada 10s evita perda de dados sem travar o loop
-    static uint32_t lastFlush = 0;
-    if (millis() - lastFlush >= 10000) {
-        lastFlush = millis();
-        logFile.flush();
-    }
+    // Flush ocorre em triggerNewLap(); SdFat auto-flush a cada setor (~700ms)
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -1987,8 +2218,12 @@ void startLogging() {
     sessionMaxSpeed   = 0.0f;
     sessionBestLapNum = 0;
     sessionDate[0]    = '\0';
-    lapActive    = true;
-    lapStartMs   = millis();
+#ifdef USE_MOCK_DATA
+    lapActive  = true;
+    lapStartMs = millis();
+#else
+    lapActive  = false;  // primeira passagem na linha só ativa o timer (out-lap não conta)
+#endif
     demoLapStart = millis();
     isLogging    = true;
     currentScreen = SCREEN_LOGGING;
@@ -2470,11 +2705,15 @@ void loop() {
     static uint32_t lastCsvLog = 0;
     bool fixFresh = gps.location.isValid() && gps.location.age() < 200;
     if (fixFresh && nowMs - lastCsvLog >= 100) {
+        uint32_t delta = nowMs - lastCsvLog;
         lastCsvLog = nowMs;
-        char timeStr[12];
-        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d",
-            gps.time.hour(), gps.time.minute(), gps.time.second());
+        char timeStr[16];
+        snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d.%02d",
+            gps.time.hour(), gps.time.minute(), gps.time.second(), gps.time.centisecond());
+        Serial.printf("[LOG] ms=%lu dt=%lu age=%lu\n", nowMs, delta, gps.location.age());
         sdLog(timeStr, nowMs, gps.location.lat(), gps.location.lng(), gps.speed.kmph());
+    } else if (!fixFresh && nowMs - lastCsvLog >= 100) {
+        Serial.printf("[LOG_SKIP] ms=%lu fix=%d age=%lu\n", nowMs, gpsOk ? 1 : 0, gps.location.age());
     }
 
     if (!gpsOk) {
