@@ -185,11 +185,14 @@ Em **Settings → 02//WLAN** ative o AP. Conecte no WiFi `KartUp-Telemetria` (ab
 ## Formato do CSV
 
 ```csv
-time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s
-14:23:01,15234,-27.4424,-48.4258,67.3,3,42150,-0.25
-14:23:01,15334,-27.4424,-48.4257,67.5,3,42250,-0.24
+date_utc,time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s
+17/06/2026,14:23:01.00,15234,-27.4424000,-48.4258000,67.3,3,42150,-0.25
+17/06/2026,14:23:01.10,15334,-27.4424000,-48.4257000,67.5,3,42250,-0.24
 ...
 ```
+
+- `time_utc` — formato `HH:MM:SS.cc` com centésimos do GPS (resolução real do NMEA). Use a coluna `millis` como referência primária de timing (1ms de resolução).
+- Logging a **10 Hz** enquanto GPS tem fix fresco (`age < 200ms`). Lacunas no CSV = perda de sinal GPS momentânea.
 
 Importável diretamente em ferramentas como **RaceChrono**, **TrackAddict** ou processamento próprio em Python/Pandas.
 
