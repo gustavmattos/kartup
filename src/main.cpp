@@ -265,6 +265,10 @@ uint8_t speedBufIdx = 0;
 
 // ─── GPS / DEMO ──────────────────────────────────────────────
 bool     wasNearFinish = false;
+// Estado do fix anterior — usado pelo cruzamento de linha de chegada
+double   prevFixLat  = 0.0, prevFixLon = 0.0;
+uint32_t prevFixMs   = 0;
+bool     havePrevFix = false;
 uint32_t demoLastMs   = 0;
 float    demoSpeed    = 0.0f;
 bool     demoUp       = true;
@@ -304,37 +308,102 @@ void resetSpeedFilter() {
 }
 
 // ─────────────────────────────────────────────────────────────
-// CONFIGURAÇÃO GPS (10 Hz, 115200 baud)
+// CONFIGURAÇÃO GPS (10 Hz GPS-only, 115200 baud, só RMC+GGA)
 // ─────────────────────────────────────────────────────────────
-void configureGPS() {
+
+// Envia pacote UBX com checksum Fletcher calculado em runtime
+void sendUBX(uint8_t cls, uint8_t id, const uint8_t* payload, uint16_t len) {
+    uint8_t hdr[6] = { 0xB5, 0x62, cls, id, (uint8_t)(len & 0xFF), (uint8_t)(len >> 8) };
+    uint8_t a = 0, b = 0;
+    for (int i = 2; i < 6; i++) { a += hdr[i]; b += a; }
+    for (int i = 0; i < len; i++) { a += payload[i]; b += a; }
+    uint8_t ck[2] = { a, b };
+    gpsSerial.write(hdr, 6);
+    if (len) gpsSerial.write(payload, len);
+    gpsSerial.write(ck, 2);
+    gpsSerial.flush();
+}
+
+// (Re)abre a UART do GPS já com buffer RX grande (evita overflow do FIFO)
+void beginGps(uint32_t baud) {
     gpsSerial.end();
-    gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
-    delay(200);
+    gpsSerial.setRxBufferSize(2048);
+    gpsSerial.begin(baud, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
+    delay(120);
+}
 
-    // Reset frio — limpa estado ruim de sessões anteriores
-    // UBX CFG-RST: clearMask=0xFFFF (tudo), resetMode=0x01 (controlled software reset)
-    static const uint8_t coldReset[] = {
-        0xB5, 0x62, 0x06, 0x04, 0x04, 0x00,
-        0xFF, 0xFF, 0x01, 0x00,
-        0x0E, 0x61
+// Detecta se há NMEA válido no baud atual (conta '$' de sentença)
+bool gpsHasNmea() {
+    while (gpsSerial.available()) gpsSerial.read();
+    uint32_t t0 = millis();
+    int dollars = 0;
+    while (millis() - t0 < 1200) {
+        if (gpsSerial.available() && gpsSerial.read() == '$') {
+            if (++dollars >= 3) return true;
+        }
+    }
+    return false;
+}
+
+void configureGPS() {
+    // Autodetecta baud atual (115200 quente, 9600 cold power-on)
+    beginGps(GPS_BAUD);
+    bool ok = gpsHasNmea();
+    if (!ok) { beginGps(GPS_BAUD_INIT); ok = gpsHasNmea(); }
+    Serial.printf("[GPS] baud detect: %s\n", ok ? "trafego ok" : "SEM trafego");
+
+    // CFG-PRT: UART1 -> 8N1, 115200, in=UBX+NMEA out=UBX+NMEA
+    const uint8_t cfgPrt[] = {
+        0x01, 0x00, 0x00, 0x00, 0xD0, 0x08, 0x00, 0x00,
+        0x00, 0xC2, 0x01, 0x00, 0x07, 0x00, 0x03, 0x00,
+        0x00, 0x00, 0x00, 0x00
     };
-    gpsSerial.write(coldReset, sizeof(coldReset));
-    gpsSerial.flush();
-    delay(1000); // aguarda módulo reiniciar
+    sendUBX(0x06, 0x00, cfgPrt, sizeof(cfgPrt));
+    delay(150);
+    beginGps(GPS_BAUD);  // reabre no baud final
 
-    Serial.println("[GPS] Reset frio enviado, aguardando...");
-    delay(500);
-
-    // UBX CFG-RATE: 100ms = 10Hz
-    static const uint8_t rate10Hz[] = {
-        0xB5, 0x62, 0x06, 0x08, 0x06, 0x00,
-        0x64, 0x00, 0x01, 0x00, 0x01, 0x00,
-        0x7A, 0x12
+    // CFG-GNSS: só GPS+QZSS (libera 10Hz real; GLONASS/SBAS/etc OFF)
+    static const uint8_t cfgGnss[] = {
+        0x00, 0x00, 0xFF, 0x07,                          // ver, trkHw, trkUse, 7 blocos
+        0x00, 0x08, 0x10, 0x00, 0x01, 0x00, 0x01, 0x01,  // GPS    ON
+        0x01, 0x01, 0x03, 0x00, 0x00, 0x00, 0x01, 0x01,  // SBAS   OFF
+        0x02, 0x04, 0x08, 0x00, 0x00, 0x00, 0x01, 0x01,  // Galileo OFF
+        0x03, 0x08, 0x10, 0x00, 0x00, 0x00, 0x01, 0x01,  // BeiDou OFF
+        0x04, 0x00, 0x08, 0x00, 0x00, 0x00, 0x01, 0x03,  // IMES   OFF
+        0x05, 0x00, 0x03, 0x00, 0x01, 0x00, 0x01, 0x05,  // QZSS   ON (segue GPS)
+        0x06, 0x08, 0x0E, 0x00, 0x00, 0x00, 0x01, 0x01   // GLONASS OFF
     };
-    gpsSerial.write(rate10Hz, sizeof(rate10Hz));
-    gpsSerial.flush();
+    sendUBX(0x06, 0x3E, cfgGnss, sizeof(cfgGnss));
+    delay(250);
+
+    // CFG-MSG: mantém RMC+GGA, desliga GLL/GSA/GSV/VTG (corta ~60% dos bytes)
+    const uint8_t keepGGA[] = { 0xF0, 0x00, 0x01 };
+    const uint8_t offGLL[]  = { 0xF0, 0x01, 0x00 };
+    const uint8_t offGSA[]  = { 0xF0, 0x02, 0x00 };
+    const uint8_t offGSV[]  = { 0xF0, 0x03, 0x00 };
+    const uint8_t keepRMC[] = { 0xF0, 0x04, 0x01 };
+    const uint8_t offVTG[]  = { 0xF0, 0x05, 0x00 };
+    sendUBX(0x06, 0x01, keepGGA, 3);
+    sendUBX(0x06, 0x01, offGLL, 3);
+    sendUBX(0x06, 0x01, offGSA, 3);
+    sendUBX(0x06, 0x01, offGSV, 3);
+    sendUBX(0x06, 0x01, keepRMC, 3);
+    sendUBX(0x06, 0x01, offVTG, 3);
+    delay(100);
+
+    // CFG-RATE: 100ms = 10Hz
+    const uint8_t cfgRate[] = { 0x64, 0x00, 0x01, 0x00, 0x01, 0x00 };
+    sendUBX(0x06, 0x08, cfgRate, sizeof(cfgRate));
+    delay(100);
+
+    // CFG-CFG: salva tudo em BBR+Flash (persiste entre boots)
+    const uint8_t cfgSave[] = {
+        0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x17
+    };
+    sendUBX(0x06, 0x09, cfgSave, sizeof(cfgSave));
     delay(200);
-    Serial.println("[GPS] Rate 10Hz enviado");
+    Serial.println("[GPS] config: GPS-only 10Hz, RMC+GGA, salvo na flash");
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -570,8 +639,9 @@ void drawDeltaNum() {
 void drawCurrentLap() {
     uint32_t now = millis();
 
-    // Overlay: exibe tempo da volta recém-encerrada por 3s
-    if (showLapOverlay && (now - lapOverlayStartMs) >= 3000) {
+    // Overlay: exibe tempo da volta recém-encerrada por 8s
+    // (próxima volta já conta em background via lapStartMs)
+    if (showLapOverlay && (now - lapOverlayStartMs) >= 8000) {
         showLapOverlay     = false;
         cacheOverlayActive = false;
         cacheCurLap        = UINT32_MAX; // força redesenho do tempo atual
@@ -758,12 +828,13 @@ void drawRecordBorder() {
 // ─────────────────────────────────────────────────────────────
 // NOVA VOLTA
 // ─────────────────────────────────────────────────────────────
-void triggerNewLap() {
+// crossMs = instante (millis) do cruzamento da linha, interpolado entre 2 fixes
+void triggerNewLapAt(uint32_t crossMs) {
     uint32_t now = millis();
     newBest = false;
 
     if (lapActive) {
-        uint32_t lap = now - lapStartMs;
+        uint32_t lap = crossMs - lapStartMs;
         lastLapMs = lap;
         lapCount++;
         if (bestLapMs == 0 || lap < bestLapMs) {
@@ -781,7 +852,7 @@ void triggerNewLap() {
         cacheOverlayActive = false;
     }
 
-    lapStartMs = now;
+    lapStartMs = crossMs;
     lapActive  = true;
     curLapMs   = 0;
     cacheCurLap = UINT32_MAX;
@@ -789,18 +860,52 @@ void triggerNewLap() {
     if (sdOk && logFile) logFile.flush();
 }
 
+// Wrapper p/ demo e chamadas baseadas no relógio atual
+void triggerNewLap() {
+    triggerNewLapAt(millis());
+}
+
 // ─────────────────────────────────────────────────────────────
-// GPS — LINHA DE CHEGADA
+// GPS — LINHA DE CHEGADA (cruzamento de segmento)
+// Detecta quando a reta entre 2 fixes consecutivos cruza o plano
+// da linha de chegada. Robusto a buracos e a qualquer velocidade;
+// interpola o instante exato do cruzamento p/ timing preciso.
 // ─────────────────────────────────────────────────────────────
-void checkGPSFinishLine() {
-    if (!gps.location.isValid()) return;
+#define FINISH_ARM_M       30.0   // raio de armação (só avalia perto)
+#define FINISH_HALF_W_M    15.0   // meia-largura da linha (lateral)
+void checkFinishCrossing(double lat, double lon, uint32_t fixMs) {
     const Track &t = TRACKS[selectedTrack];
-    double dist = TinyGPSPlus::distanceBetween(
-        gps.location.lat(), gps.location.lng(),
-        t.finishLat, t.finishLon);
-    bool near = dist < t.finishRadius;
-    if (near && !wasNearFinish) triggerNewLap();
-    wasNearFinish = near;
+
+    if (!havePrevFix) {
+        havePrevFix = true;
+        prevFixLat = lat; prevFixLon = lon; prevFixMs = fixMs;
+        return;
+    }
+
+    // Converte p/ metros locais (equirectangular) com origem na chegada
+    const double mLat = 111320.0;
+    const double mLon = 111320.0 * cos(t.finishLat * 0.01745329252);
+    double xc = (lon - t.finishLon) * mLon, yc = (lat - t.finishLat) * mLat;
+    double xp = (prevFixLon - t.finishLon) * mLon, yp = (prevFixLat - t.finishLat) * mLat;
+
+    // Vetor de deslocamento prev->cur = direção da pista no ponto
+    double ux = xc - xp, uy = yc - yp;
+    double seg = sqrt(ux * ux + uy * uy);
+    double dCur = sqrt(xc * xc + yc * yc);
+
+    if (seg > 0.5 && dCur < FINISH_ARM_M) {        // em movimento e perto
+        ux /= seg; uy /= seg;
+        double sPrev = xp * ux + yp * uy;          // along-track antes (<0 = atrás)
+        double sCur  = xc * ux + yc * uy;          // along-track depois
+        double latOff = fabs(xc * (-uy) + yc * ux); // distância lateral à linha
+        if (sPrev < 0.0 && sCur >= 0.0 && latOff < FINISH_HALF_W_M) {
+            double f = (sCur != sPrev) ? (-sPrev / (sCur - sPrev)) : 0.0;
+            uint32_t crossMs = prevFixMs + (uint32_t)(f * (double)(fixMs - prevFixMs));
+            triggerNewLapAt(crossMs);
+        }
+    }
+
+    prevFixLat = lat; prevFixLon = lon; prevFixMs = fixMs;
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -2155,6 +2260,7 @@ void resetLapState() {
     deltaS = 0; newBest = false;
     recordAnim = false; recordFlashes = 0;
     wasNearFinish = false;
+    havePrevFix = false;
     cacheSpeed = -1; cacheCurLap = UINT32_MAX;
     cacheBestLap = UINT32_MAX; cacheLastLap = UINT32_MAX;
     cacheLapCnt = -1; cacheDelta = -999;
@@ -2560,8 +2666,8 @@ void drawShutdownConfirm() {
 void setup() {
     Serial.begin(115200);
 
-    // Economia energia: CPU 80MHz (de 240) + WiFi off
-    setCpuFrequencyMhz(80);
+    // CPU 160MHz (headroom p/ drenar UART 10Hz sem overflow) + WiFi off
+    setCpuFrequencyMhz(160);
     WiFi.mode(WIFI_OFF);
     btStop();
 
@@ -2570,6 +2676,7 @@ void setup() {
     applyBrightness();
 
 #ifndef USE_MOCK_DATA
+    gpsSerial.setRxBufferSize(2048);   // FIFO grande: evita perder NMEA a 10Hz
     gpsSerial.begin(GPS_BAUD, SERIAL_8N1, GPS_RX_PIN, GPS_TX_PIN);
 #endif
 
@@ -2701,29 +2808,34 @@ void loop() {
     }
 #endif
 
-    // Log no SD a cada 100ms (10 Hz) — fix fresco
+    // Grava 1 linha por fix NOVO do GPS (event-driven = sem buracos de timer).
+    // isUpdated() só fica true quando uma sentença nova foi decodificada;
+    // lat()/lng() limpam o flag -> exatamente 1 log por fix = taxa real do módulo.
     static uint32_t lastCsvLog = 0;
-    bool fixFresh = gps.location.isValid() && gps.location.age() < 200;
-    if (fixFresh && nowMs - lastCsvLog >= 100) {
-        uint32_t delta = nowMs - lastCsvLog;
+    bool newFix = gps.location.isUpdated();
+    if (newFix && gps.location.isValid() && gps.location.age() < 180) {
+        uint32_t dt = nowMs - lastCsvLog;
         lastCsvLog = nowMs;
+        double lat = gps.location.lat();
+        double lon = gps.location.lng();
         char timeStr[16];
         snprintf(timeStr, sizeof(timeStr), "%02d:%02d:%02d.%02d",
             gps.time.hour(), gps.time.minute(), gps.time.second(), gps.time.centisecond());
-        Serial.printf("[LOG] ms=%lu dt=%lu age=%lu\n", nowMs, delta, gps.location.age());
-        sdLog(timeStr, nowMs, gps.location.lat(), gps.location.lng(), gps.speed.kmph());
-    } else if (!fixFresh && nowMs - lastCsvLog >= 100) {
-        Serial.printf("[LOG_SKIP] ms=%lu fix=%d age=%lu\n", nowMs, gpsOk ? 1 : 0, gps.location.age());
+        Serial.printf("[LOG] ms=%lu dt=%lu age=%lu\n", nowMs, dt, gps.location.age());
+        // Out-lap (lapActive=false): não grava box->linha no CSV.
+        // checkFinishCrossing continua rodando p/ detectar 1o cruzamento.
+        if (lapActive) sdLog(timeStr, nowMs, lat, lon, gps.speed.kmph());
+        checkFinishCrossing(lat, lon, nowMs);
+        if (gps.speed.isValid()) curSpeed = smoothSpeed(gps.speed.kmph());
+    } else if (!gps.location.isValid() && nowMs - lastCsvLog >= 1000) {
+        lastCsvLog = nowMs;
+        Serial.printf("[LOG_SKIP] sem fix age=%lu\n", gps.location.age());
     }
 
     if (!gpsOk) {
         resetSpeedFilter();
         curSpeed = 0.0f;
-    } else if (gps.speed.isValid()) {
-        curSpeed = smoothSpeed(gps.speed.kmph());
     }
-
-    checkGPSFinishLine();
 
     if (lapActive) {
         curLapMs = nowMs - lapStartMs;
