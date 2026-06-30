@@ -79,7 +79,7 @@ C_BORDER  = 0x18C3  // bordas suaves
 - `lapStartMs` — timestamp de início da volta atual; atualizado imediatamente em `triggerNewLap()`, antes de qualquer display
 - `curLapMs = millis() - lapStartMs` — tempo corrente; atualizado no loop independente do display
 - `deltaS` — diferença em segundos vs melhor volta (demo usa valor simulado)
-- **Out-lap (GPS real):** `startLogging()` inicia com `lapActive=false`. Primeira passagem na linha de chegada apenas ativa o timer (`lapActive=true`, `lapStartMs=now`) sem gravar volta — é a saída do box. Segunda passagem grava Volta 1. `lapCount` conta voltas completadas; display e CSV usam `lapCount + 1` = número da volta atual. Demo mode mantém `lapActive=true` (protegido por `#ifdef USE_MOCK_DATA`).
+- **Out-lap (GPS real):** `startLogging()` inicia com `lapActive=false`. Primeira passagem na linha de chegada apenas ativa o timer (`lapActive=true`, `lapStartMs=now`) sem gravar volta — é a saída do box. Segunda passagem grava Volta 1. `lapCount` conta voltas completadas; display e CSV usam `lapCount + 1` = número da volta atual. **Out-lap não é gravado no CSV:** enquanto `lapActive=false`, `sdLog()` é pulado no loop (o caminho box→linha não entra no log); `checkFinishCrossing()` continua rodando para detectar o 1º cruzamento. CSV começa na Volta 1. Demo mode mantém `lapActive=true` (protegido por `#ifdef USE_MOCK_DATA`).
 
 ## Log CSV e Meta de Sessão
 - **Header CSV (v2.1+):** `date_utc,time_utc,millis,lat,lon,speed_kmh,lap,lap_ms,delta_s`
@@ -91,12 +91,12 @@ C_BORDER  = 0x18C3  // bordas suaves
 - Variáveis de sessão: `sessionMaxSpeed` (float), `sessionBestLapNum` (int), `sessionDate[12]` (char) — inicializadas em `startLogging()`, populadas durante logging, gravadas em `stopLogging()`.
 
 ### Overlay de última volta (3s)
-Ao cruzar a linha de chegada, `drawCurrentLap()` exibe o tempo da volta encerrada por 3 segundos antes de voltar ao cronômetro atual. A próxima volta já está contando em background via `lapStartMs`.
+Ao cruzar a linha de chegada, `drawCurrentLap()` exibe o tempo da volta encerrada por 8 segundos antes de voltar ao cronômetro atual. A próxima volta já está contando em background via `lapStartMs`.
 - `showLapOverlay` (bool) — ativa overlay
 - `lapOverlayStartMs` (uint32_t) — timestamp de início do overlay
 - `overlayLapMs` (uint32_t) — tempo da volta a exibir
 - `overlayIsNewBest` (bool) — determina cor: `C_GREEN` se recorde, `C_RED_F1` se pior
-- `cacheOverlayActive` (bool) — anti-flickering: redraw único durante os 3s
+- `cacheOverlayActive` (bool) — anti-flickering: redraw único durante os 8s
 
 ## Fontes
 - `tft.setTextFont(7)` — 7 segmentos 48px, só suporta `0-9 : . -` (perfeito para tempos)
