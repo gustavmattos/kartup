@@ -257,6 +257,7 @@ bool     cacheOverlayActive = false;
 float sessionMaxSpeed  = 0.0f;
 int   sessionBestLapNum = 0;
 char  sessionDate[12]  = "";   // "DD/MM/YYYY", preenchido no sdLog ao 1º fix
+char  sessionStartTime[12] = ""; // "HH:MM:SS" UTC, hora de início da sessão
 
 // ─── FILTRO DE VELOCIDADE (média móvel) ──────────────────────
 #define SPEED_SAMPLES 5
@@ -1604,9 +1605,9 @@ int waitForTrackSelection() {
 // ─────────────────────────────────────────────────────────────
 
 #define HIST_MAX_SESSIONS  200
-#define HIST_ROW_H        26
+#define HIST_ROW_H        32
 #define HIST_LIST_Y       28
-#define HIST_VISIBLE_ROWS  7
+#define HIST_VISIBLE_ROWS  6
 #define HIST_SB_X         (W - 9)   // scrollbar x
 #define HIST_SB_W          6        // scrollbar width
 #define HIST_LIST_W       (W - 8 - HIST_SB_W - 4)  // row width, deixa espaço p/ scrollbar
@@ -1614,6 +1615,7 @@ int waitForTrackSelection() {
 struct SessionMeta {
     char basename[16];   // "gps_095"
     char date[12];       // "DD/MM/YYYY"
+    char startTime[12];  // "HH:MM:SS" UTC, hora de início
     int  laps;
     uint32_t bestMs;
     int  bestLap;
@@ -1639,6 +1641,7 @@ static bool parseMeta(const char* metaPath, SessionMeta& s) {
         }
         line[n] = '\0';
         if (strncmp(line, "date=", 5) == 0)     strncpy(s.date, line + 5, sizeof(s.date));
+        else if (strncmp(line, "start=", 6) == 0) strncpy(s.startTime, line + 6, sizeof(s.startTime));
         else if (strncmp(line, "laps=", 5) == 0) s.laps = atoi(line + 5);
         else if (strncmp(line, "best_ms=", 8) == 0) s.bestMs = (uint32_t)atol(line + 8);
         else if (strncmp(line, "best_lap=", 9) == 0) s.bestLap = atoi(line + 9);
@@ -1665,7 +1668,7 @@ static bool parseCsvForMeta(SessionMeta& s) {
     int      bestLapNum    = 0;
 
     // Índices de coluna descobertos no header (default = v2.1+)
-    int colDate = 0, colSpd = 5, colLap = 6, colLapMs = 7;
+    int colDate = 0, colTime = 1, colSpd = 5, colLap = 6, colLapMs = 7;
 
     while (f.available()) {
         int n = 0;
@@ -1692,6 +1695,7 @@ static bool parseCsvForMeta(SessionMeta& s) {
             // Detecta colunas pelo nome do header
             for (int i = 0; i < fi; i++) {
                 if (strcmp(fields[i], "date_utc") == 0 || strcmp(fields[i], "date") == 0) colDate = i;
+                else if (strcmp(fields[i], "time_utc") == 0 || strcmp(fields[i], "time") == 0) colTime = i;
                 else if (strcmp(fields[i], "speed_kmh") == 0 || strcmp(fields[i], "spd") == 0) colSpd = i;
                 else if (strcmp(fields[i], "lap") == 0) colLap = i;
                 else if (strcmp(fields[i], "lap_ms") == 0) colLapMs = i;
@@ -1703,6 +1707,10 @@ static bool parseCsvForMeta(SessionMeta& s) {
 
         if (s.date[0] == '\0' && fields[colDate][0] && fields[colDate][0] != '?')
             strncpy(s.date, fields[colDate], sizeof(s.date) - 1);
+        if (s.startTime[0] == '\0' && colTime < fi && fields[colTime][0]) {
+            strncpy(s.startTime, fields[colTime], 8);  // "HH:MM:SS"
+            s.startTime[8] = '\0';
+        }
 
         float spd = atof(fields[colSpd]);
         if (spd > maxSpd) maxSpd = spd;
@@ -1744,6 +1752,7 @@ static bool parseCsvForMeta(SessionMeta& s) {
         if (mf) {
             char buf[48];
             snprintf(buf, sizeof(buf), "date=%s", s.date);   mf.println(buf);
+            snprintf(buf, sizeof(buf), "start=%s", s.startTime[0] ? s.startTime : "--:--:--"); mf.println(buf);
             snprintf(buf, sizeof(buf), "laps=%d", s.laps);   mf.println(buf);
             snprintf(buf, sizeof(buf), "best_ms=%lu", (unsigned long)s.bestMs); mf.println(buf);
             snprintf(buf, sizeof(buf), "best_lap=%d", s.bestLap); mf.println(buf);
@@ -1774,7 +1783,7 @@ static void loadHistoryBasenames() {
                 *ext = '\0';
                 strncpy(s.basename, name, sizeof(s.basename));
                 s.laps = 0; s.bestMs = 0; s.bestLap = 0; s.maxKmh = 0;
-                s.date[0] = '\0'; s.hasMeta = false;
+                s.date[0] = '\0'; s.startTime[0] = '\0'; s.hasMeta = false;
                 histCount++;
             }
         }
@@ -1805,35 +1814,61 @@ static void loadHistorySessions() {
     loadHistoryBasenames();
 }
 
+// Linha estilo HUD neon: painel + brackets accent nos cantos + barra
+// lateral + título (Font2) e data; badge de voltas em accent com glow.
 static void drawHistoryRow(int idx, int y, bool selected) {
     SessionMeta& s = histSessions[idx];
+    const int x = 4, w = HIST_LIST_W, rh = HIST_ROW_H - 2;
     uint16_t bg     = selected ? C_PANEL2 : C_PANEL;
-    uint16_t accent = selected ? C_RED_F1 : C_BORDER;
-    tft.fillRect(4, y, HIST_LIST_W, HIST_ROW_H - 2, bg);
-    tft.drawRect(4, y, HIST_LIST_W, HIST_ROW_H - 2, accent);
-    tft.fillRect(4, y, 4, HIST_ROW_H - 2, accent);
+    uint16_t accent = selected ? C_RED_F1 : C_SPEED;   // neon cyan (vermelho se ativo)
+    uint16_t glow   = ((accent >> 1) & 0x7BEF);         // accent dim p/ brilho
 
-    char label[32];
+    tft.fillRect(x, y, w, rh, bg);
+    tft.drawRect(x, y, w, rh, C_GRAY_DK);
+    tft.fillRect(x, y, 3, rh, accent);                  // barra lateral accent
+
+    // Brackets neon nos cantos direitos (estilo tiles HUD)
+    const int bl = 6;
+    tft.drawFastHLine(x+w-bl, y,       bl, accent);
+    tft.drawFastHLine(x+w-bl, y+1,     bl, accent);
+    tft.drawFastVLine(x+w-1,  y,       bl, accent);
+    tft.drawFastVLine(x+w-2,  y,       bl, accent);
+    tft.drawFastHLine(x+w-bl, y+rh-1,  bl, accent);
+    tft.drawFastHLine(x+w-bl, y+rh-2,  bl, accent);
+    tft.drawFastVLine(x+w-1,  y+rh-bl, bl, accent);
+    tft.drawFastVLine(x+w-2,  y+rh-bl, bl, accent);
+
     char numPart[8];
     strncpy(numPart, s.basename + 4, sizeof(numPart));
-    if (s.hasMeta && s.date[0]) {
-        snprintf(label, sizeof(label), "gps%s - %s", numPart, s.date);
-    } else {
-        snprintf(label, sizeof(label), "gps%s - sem dados", numPart);
-    }
+    numPart[sizeof(numPart) - 1] = '\0';
 
-    tft.setTextFont(1);
+    // Título: GPS095 (Font2, branco)
+    char title[16];
+    snprintf(title, sizeof(title), "GPS%s", numPart);
+    tft.setTextFont(2);
     tft.setTextSize(1);
-    tft.setTextDatum(ML_DATUM);
+    tft.setTextDatum(TL_DATUM);
     tft.setTextColor(C_WHITE, bg);
-    tft.drawString(label, 14, y + HIST_ROW_H / 2);
+    tft.drawString(title, 12, y + 3);
 
+    // Data / status embaixo (Font1, cinza)
+    tft.setTextFont(1);
+    tft.setTextDatum(BL_DATUM);
+    tft.setTextColor(C_GRAY, bg);
+    tft.drawString((s.hasMeta && s.date[0]) ? s.date : "sem dados", 12, y + rh - 4);
+
+    // Badge de voltas à direita (accent Font2 + glow)
     if (s.hasMeta) {
         char lapStr[8];
         snprintf(lapStr, sizeof(lapStr), "%dV", s.laps);
+        int bx = x + w - bl - 5;
+        int by = y + rh / 2;
+        tft.setTextFont(2);
         tft.setTextDatum(MR_DATUM);
-        tft.setTextColor(C_GRAY, bg);
-        tft.drawString(lapStr, 4 + HIST_LIST_W - 4, y + HIST_ROW_H / 2);
+        tft.setTextColor(glow, bg);
+        tft.drawString(lapStr, bx + 1, by + 1);
+        tft.setTextColor(accent, bg);
+        tft.drawString(lapStr, bx, by);
     }
 }
 
@@ -1957,7 +1992,7 @@ void drawSessionSummary(int idx) {
     }
 
     // Linhas de dados
-    const int rowY[]   = { 50, 90, 130, 170 };
+    const int rowY[]   = { 46, 84, 122, 160, 198 };
     const int labelX   = 16;
     const int valueX   = W - 16;
 
@@ -1980,52 +2015,77 @@ void drawSessionSummary(int idx) {
     snprintf(buf, sizeof(buf), "%d", s.laps);
     drawRow(rowY[0], "TOTAL DE VOLTAS", buf, C_WHITE);
 
+    snprintf(buf, sizeof(buf), "%s UTC", s.startTime[0] ? s.startTime : "--:--:--");
+    drawRow(rowY[1], "HORA INICIO", buf, C_GREEN);
+
     if (s.bestMs > 0) {
         snprintf(buf, sizeof(buf), "%s  (V%d)", formatTime(s.bestMs).c_str(), s.bestLap);
     } else {
         snprintf(buf, sizeof(buf), "--");
     }
-    drawRow(rowY[1], "MELHOR VOLTA", buf, C_AMBER);
+    drawRow(rowY[2], "MELHOR VOLTA", buf, C_AMBER);
 
     snprintf(buf, sizeof(buf), "%.0f km/h", s.maxKmh);
-    drawRow(rowY[2], "VEL. MAXIMA", buf, C_SPEED);
+    drawRow(rowY[3], "VEL. MAXIMA", buf, C_SPEED);
 
     // Arquivo CSV
     char csvName[20];
     snprintf(csvName, sizeof(csvName), "%s.csv", s.basename);
-    drawRow(rowY[3], "ARQUIVO", csvName, C_GRAY);
+    drawRow(rowY[4], "ARQUIVO", csvName, C_GRAY);
 }
 
 void handleHistoryTouch(int sx, int sy) {
     if (currentScreen == SCREEN_HISTORY) {
-        int startY  = sy;
-        int lastY   = sy;
-        int prevY   = sy;
-        uint32_t lastT = millis();
-        float velocity = 0.0f; // linhas/ms, positivo = scroll down (offset decresce)
+        const int startY = sy;
+        int   lastY    = sy;       // y da iteração anterior (p/ delta incremental)
+        int   peakDy   = 0;        // maior deslocamento absoluto no gesto (tap vs drag)
+        float accumDy  = 0.0f;     // px arrastados desde o último shift de linha
+        float maxPos   = (float)max(0, histCount - HIST_VISIBLE_ROWS);
 
-        // Rastreia dedo e calcula velocidade instantânea
+        int      velPrevY = sy;    // âncora p/ cálculo de velocidade
+        uint32_t velPrevT = millis();
+        float    velocity = 0.0f;  // px/ms (negativo = arrastar p/ cima)
+
+        int lowZ = 0;              // amostras seguidas de baixa pressão (debounce release)
+
+        // Rastreia o dedo: scroll ao vivo + velocidade p/ inércia.
+        // Debounce de release tolera quedas transitórias de pressão do touch
+        // resistivo durante o arraste (a causa do drag virar tap).
         while (true) {
             TS_Point pp = ts.getPoint();
-            if (pp.z < 80) break;
+            if (pp.z < 60) {                 // pressão baixa: só encerra se persistir
+                if (++lowZ >= 4) break;
+                delay(4);
+                continue;
+            }
+            lowZ = 0;
+
             int nx, ny;
             touchToScreen(pp, nx, ny);
+            if (abs(ny - startY) > peakDy) peakDy = abs(ny - startY);
+
+            // Scroll ao vivo: acumula px e desloca 1 linha a cada HIST_ROW_H
+            accumDy += (ny - lastY);
+            while (accumDy <= -HIST_ROW_H && histScrollOffset < (int)maxPos) {
+                histScrollOffset++; accumDy += HIST_ROW_H; redrawHistoryList();
+            }
+            while (accumDy >= HIST_ROW_H && histScrollOffset > 0) {
+                histScrollOffset--; accumDy -= HIST_ROW_H; redrawHistoryList();
+            }
+            lastY = ny;
+
             uint32_t now = millis();
-            uint32_t dt  = now - lastT;
+            uint32_t dt  = now - velPrevT;
             if (dt >= 8) {
-                // velocidade em linhas/ms (positivo = arrastar p/ baixo = offset diminui)
-                velocity = (float)(ny - lastY) / (float)(dt * HIST_ROW_H);
-                prevY  = lastY;
-                lastY  = ny;
-                lastT  = now;
+                velocity = (float)(ny - velPrevY) / (float)dt; // px/ms
+                velPrevY = ny;
+                velPrevT = now;
             }
             delay(4);
         }
 
-        int totalDy = lastY - startY;
-
-        // Tap simples (movimento pequeno)
-        if (abs(totalDy) < 12) {
+        // Tap: nunca passou do limiar em nenhum instante do gesto
+        if (peakDy < 12) {
             if (isBackPressed(sx, sy)) { drawSettingsScreen(); return; }
             for (int i = 0; i < HIST_VISIBLE_ROWS; i++) {
                 int realIdx = histScrollOffset + i;
@@ -2039,11 +2099,10 @@ void handleHistoryTouch(int sx, int sy) {
             return;
         }
 
-        // Inércia pós-swipe
-        float pos    = (float)histScrollOffset;
-        float maxPos = (float)max(0, histCount - HIST_VISIBLE_ROWS);
-        // velocity negativa = arrastar p/ cima = offset aumenta
-        float vel    = -velocity; // linhas/ms no sentido do scroll
+        // Inércia pós-swipe — continua do ponto exato (inclui resíduo sub-linha)
+        float pos = (float)histScrollOffset - accumDy / HIST_ROW_H;
+        // velocity px/ms; negativa = arrastar p/ cima = offset aumenta
+        float vel = -velocity / HIST_ROW_H; // linhas/ms no sentido do scroll
 
         while (fabsf(vel) > 0.002f) {
             // Para se usuário tocar de novo
@@ -2185,6 +2244,11 @@ void sdLog(const char* timeStr, uint32_t ms, double lat, double lon, float spd) 
         snprintf(sessionDate, sizeof(sessionDate), "%02d/%02d/%04d",
             gps.date.day(), gps.date.month(), gps.date.year());
     }
+    // Fallback da hora de início (se sem fix no INICIAR LOG): 1ª linha gravada
+    if (sessionStartTime[0] == '\0' && timeStr[0]) {
+        strncpy(sessionStartTime, timeStr, 8);  // "HH:MM:SS" (corta centésimos)
+        sessionStartTime[8] = '\0';
+    }
 
     if (spd > sessionMaxSpeed) sessionMaxSpeed = spd;
 
@@ -2324,11 +2388,17 @@ void startLogging() {
     sessionMaxSpeed   = 0.0f;
     sessionBestLapNum = 0;
     sessionDate[0]    = '\0';
+    sessionStartTime[0] = '\0';
 #ifdef USE_MOCK_DATA
     lapActive  = true;
     lapStartMs = millis();
 #else
     lapActive  = false;  // primeira passagem na linha só ativa o timer (out-lap não conta)
+    // Hora de início da sessão (momento do INICIAR LOG, antes do out-lap)
+    if (gps.time.isValid()) {
+        snprintf(sessionStartTime, sizeof(sessionStartTime), "%02d:%02d:%02d",
+            gps.time.hour(), gps.time.minute(), gps.time.second());
+    }
 #endif
     demoLapStart = millis();
     isLogging    = true;
@@ -2354,6 +2424,8 @@ void stopLogging() {
         if (metaFile) {
             char buf[64];
             snprintf(buf, sizeof(buf), "date=%s", sessionDate[0] ? sessionDate : "??/??/????");
+            metaFile.println(buf);
+            snprintf(buf, sizeof(buf), "start=%s", sessionStartTime[0] ? sessionStartTime : "--:--:--");
             metaFile.println(buf);
             snprintf(buf, sizeof(buf), "laps=%d", lapCount);
             metaFile.println(buf);
