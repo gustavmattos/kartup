@@ -968,7 +968,7 @@ void drawBootScreen() {
     tft.setTextDatum(TL_DATUM);
     tft.drawString("ESP32 CYD", 8, 8);
     tft.setTextDatum(TR_DATUM);
-    tft.drawString(FIRMWARE_VERSION, W - 8, 8);
+    tft.drawString("VERSAO OTA", W - 8, 8);
 
     // Logo centralizado
     const int logoX = (W - LOGO_W) / 2;
