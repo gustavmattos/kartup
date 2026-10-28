@@ -31,7 +31,7 @@ Use alimentação estável. O arquivo combinado é exclusivo para instalação p
    com SFTP no Termius, se disponível na sua instalação). Faça isso antes de conectar à rede do KartUp.
 3. Encerre a sessão de cronometragem. Abra Settings → WLAN no KartUp.
 4. Conecte o iPad à rede `KartUp-Telemetria`; mantenha a conexão mesmo sem internet.
-5. No Safari, abra `http://192.168.4.1` e toque em **ATUALIZAR FIRMWARE**,
+5. No Safari, abra `http://192.168.4.1` e escolha **2. Atualizar firmware** no menu inicial,
    ou abra diretamente `http://192.168.4.1/update`.
 6. Usuário: `admin`. Senha: os oito dígitos mostrados na tela do KartUp.
    Uma nova senha é gerada a cada ativação do Wi-Fi.
@@ -68,3 +68,26 @@ login incorreto (deve negar acesso), login correto e envio do mesmo `firmware.bi
 deve reiniciar e continuar na versão 2.2.0-ota. Confira downloads CSV e uma nova
 sessão de cronometragem. Um arquivo de texto renomeado para `.bin` deve ser rejeitado
 sem reinicialização. Para atualizar em pista, conclua primeiro esse teste local.
+
+## Menu do modo AP (2.2.1)
+
+A página inicial `/` oferece duas opções: **1. Baixar logs** abre `/logs`,
+e **2. Atualizar firmware** abre `/update`. A lista de logs tem um botão para
+voltar ao menu. O menu e a atualização continuam disponíveis sem cartão SD.
+
+Se `/update` não existir no aparelho, confirme se o firmware instalado já tem
+suporte OTA. Alterar o código na VPS não atualiza o CYD: um aparelho com firmware
+anterior ao OTA precisa receber a primeira instalação por USB.
+
+## Login e versão no display (2.2.2)
+
+Ao abrir `http://192.168.4.1`, o navegador solicita usuário `admin` e a senha
+mostrada no CYD ao ativar WLAN. Menu, logs, downloads e logo exigem autenticação;
+a atualização mantém a autenticação e o token por sessão. A senha muda ao reativar
+WLAN, e o navegador pode reutilizar as credenciais durante o acesso.
+
+A tela inicial mostra `Firmware 2.2.2-ota` centralizado abaixo do botão START,
+com fonte 2. A barra decorativa e o texto no canto da engrenagem foram removidos.
+
+No aparelho, conferir login incorreto/correto no menu, acesso direto a `/logs`
+e `/download`, download CSV, atualização OTA e posição da versão após reiniciar.

@@ -20,7 +20,7 @@
 #include <WebServer.h>
 #include <Update.h>
 #include <esp_ota_ops.h>
-#define FIRMWARE_VERSION "2.2.0-ota"
+#define FIRMWARE_VERSION "2.2.2-ota"
 
 // ─── MOCK DATA (descomente a linha abaixo para simular sem GPS) ───
 // #define USE_MOCK_DATA true
@@ -967,8 +967,6 @@ void drawBootScreen() {
     tft.setTextColor(C_GRAY_DK, C_BG);
     tft.setTextDatum(TL_DATUM);
     tft.drawString("ESP32 CYD", 8, 8);
-    tft.setTextDatum(TR_DATUM);
-    tft.drawString("VERSAO OTA", W - 8, 8);
 
     // Logo centralizado
     const int logoX = (W - LOGO_W) / 2;
@@ -1006,11 +1004,11 @@ void drawBootScreen() {
     tft.setTextDatum(MC_DATUM);
     tft.drawString("START", W/2, BTN_Y + BTN_H/2);
 
-    // Progress bar fininha abaixo do botao (decoracao)
-    const int pbX = (W - 160) / 2;
-    const int pbY = BTN_Y + BTN_H + 10;
-    tft.fillRect(pbX, pbY, 160, 2, C_GRAY_DK);
-    tft.fillRect(pbX, pbY,  96, 2, C_RED_F1);
+    // Versao visivel abaixo do START, fora da area da engrenagem.
+    tft.setTextFont(2);
+    tft.setTextColor(C_GRAY, C_BG);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString(String("Firmware ") + FIRMWARE_VERSION, W/2, BTN_Y + BTN_H + 16);
 
     tft.setTextFont(1);
     tft.setTextColor(C_GRAY_DK, C_BG);
@@ -2464,7 +2462,21 @@ void stopLogging() {
 // ─────────────────────────────────────────────────────────────
 // WiFi AP — HTTP HANDLERS
 // ─────────────────────────────────────────────────────────────
+bool requireApLogin() {
+    httpServer.sendHeader("Cache-Control", "no-store");
+    if (!wifiMode || isLogging) {
+        httpServer.send(409, "text/plain", "Encerre a sessao e ative o WiFi.");
+        return false;
+    }
+    if (!httpServer.authenticate("admin", otaPassword)) {
+        httpServer.requestAuthentication();
+        return false;
+    }
+    return true;
+}
+
 void handleLogo() {
+    if (!requireApLogin()) return;
     const int pixDataSize = LOGO_W * LOGO_H * 3;   // 60*60*3 = 10800
     const int fileSize    = 54 + pixDataSize;       // 10854
 
@@ -2496,7 +2508,6 @@ void handleLogo() {
         *p++ = ((px >> 11) & 0x1F) << 3;   // R
     }
 
-    httpServer.sendHeader("Cache-Control", "max-age=3600");
     httpServer.send_P(200, "image/bmp", (const char*)buf, fileSize);
     free(buf);
 }
@@ -2592,6 +2603,27 @@ void handleOtaResult() {
 }
 
 void handleRoot() {
+    if (!requireApLogin()) return;
+    httpServer.sendHeader("Cache-Control", "no-store");
+    String html = F(R"HTML(<!doctype html><html lang="pt-BR"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KartUp — Wi-Fi</title><style>
+*{box-sizing:border-box}body{background:#0a0a0a;color:#fff;font:18px system-ui;max-width:480px;margin:0 auto;padding:24px}
+header{display:flex;align-items:center;gap:16px;border-bottom:2px solid #e8001d;padding-bottom:18px}img{width:64px;height:64px}h1{margin:0;color:#e8001d}header p{margin:4px 0;color:#aaa;font-size:14px}
+h2{font-size:22px;margin-top:28px}.option{display:block;background:#171717;border:1px solid #444;border-radius:10px;padding:22px;margin:18px 0;color:#fff;text-decoration:none}.option strong{display:block;font-size:21px;margin-bottom:8px}.option span{color:#bbb;font-size:16px}.update{border-color:#e8001d}footer{color:#aaa;font-size:14px}
+</style></head><body><header><img src="/logo.bmp" alt="KartUp"><div><h1>KARTUP</h1><p>Modo Wi-Fi</p></div></header>
+<h2>O que deseja fazer?</h2>
+<a class="option" href="/logs"><strong>1. Baixar logs</strong><span>Ver as sessões e baixar os arquivos CSV do cartão SD.</span></a>
+<a class="option update" href="/update"><strong>2. Atualizar firmware</strong><span>Instalar um arquivo .bin. Use admin e a senha exibida na tela do KartUp.</span></a>
+<footer>Firmware: )HTML");
+    html += FIRMWARE_VERSION;
+    html += F("</footer></body></html>");
+    httpServer.send(200, "text/html; charset=utf-8", html);
+}
+
+void handleLogs() {
+    if (!requireApLogin()) return;
+
     String html;
     html.reserve(4096);
 
@@ -2625,9 +2657,7 @@ void handleRoot() {
     html += F("<header><img src='/logo.bmp' alt='KartUp'>"
               "<div><h1>KARTUP</h1><p>Telemetria GPS</p></div></header>");
 
-    html += F("<div class='card'><h2>FIRMWARE</h2><p>");
-    html += FIRMWARE_VERSION;
-    html += F("</p><br><a class='btn' href='/update'>ATUALIZAR FIRMWARE</a></div>");
+    html += F("<p style='margin-bottom:20px'><a class='btn' href='/'>VOLTAR AO MENU</a></p>");
 
     // Card sessão
     html += F("<div class='card'><h2>SESSAO ATUAL</h2>");
@@ -2679,6 +2709,7 @@ void handleRoot() {
 }
 
 void handleDownload() {
+    if (!requireApLogin()) return;
     if (!httpServer.hasArg("file")) {
         httpServer.send(400, "text/plain", "Parametro 'file' ausente");
         return;
@@ -2880,6 +2911,7 @@ void setup() {
     httpServer.on("/update", HTTP_GET, handleOtaPage);
     httpServer.on("/update", HTTP_POST, handleOtaResult, handleOtaUpload);
     httpServer.on("/",         HTTP_GET, handleRoot);
+    httpServer.on("/logs",     HTTP_GET, handleLogs);
     httpServer.on("/logo.bmp", HTTP_GET, handleLogo);
     httpServer.on("/download", HTTP_GET, handleDownload);
 
