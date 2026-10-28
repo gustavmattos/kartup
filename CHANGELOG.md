@@ -1,5 +1,12 @@
 # Histórico do firmware
 
+## 0.0.2 OTA
+
+- Identidade visual unificada nas páginas inicial, logs e atualização: logo original, tipografia do sistema, cartões discretos e textos objetivos.
+- Seletor de firmware e progresso com o mesmo acabamento do portal.
+- Lista de logs mostra apenas CSVs aceitos pela rota de download.
+- Mantém autenticação e fluxo OTA existentes; sem dependências externas.
+
 ## 0.0.1 OTA
 
 Início da nova série de versões do data logger automotivo KartUp.

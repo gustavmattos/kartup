@@ -20,7 +20,7 @@
 #include <WebServer.h>
 #include <Update.h>
 #include <esp_ota_ops.h>
-#define FIRMWARE_VERSION "0.0.1 OTA"
+#define FIRMWARE_VERSION "0.0.2 OTA"
 
 // ─── MOCK DATA (descomente a linha abaixo para simular sem GPS) ───
 // #define USE_MOCK_DATA true
@@ -1228,7 +1228,7 @@ void readSdInfo() {
     while (entry.openNext(&dir, O_READ)) {
         char name[32];
         entry.getName(name, sizeof(name));
-        if (strncmp(name, "gps_", 4) == 0) {
+        if (strncmp(name, "gps_", 4) == 0 && String(name).endsWith(".csv") && strlen(name) <= 12) {
             sdLogFiles++;
             sdLogKB += entry.fileSize() / 1024;
         }
@@ -1783,7 +1783,7 @@ static void loadHistoryBasenames() {
     while (entry.openNext(&dir, O_READ) && histCount < HIST_MAX_SESSIONS) {
         char name[32];
         entry.getName(name, sizeof(name));
-        if (strncmp(name, "gps_", 4) == 0) {
+        if (strncmp(name, "gps_", 4) == 0 && String(name).endsWith(".csv") && strlen(name) <= 12) {
             char* ext = strrchr(name, '.');
             if (ext && strcmp(ext, ".csv") == 0) {
                 SessionMeta& s = histSessions[histCount];
@@ -2522,19 +2522,34 @@ bool otaAuthenticated() {
     return httpServer.authenticate("admin", otaPassword);
 }
 
+// Shared, local-only presentation for the AP portal.
+String apPageStart(const char* title, bool back = true) {
+    String html = F(R"HTML(<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#101114"><title>KartUp</title><style>
+:root{color-scheme:dark;--bg:#101114;--panel:#1b1d22;--line:#303238;--muted:#a5a8b1;--accent:#ef5364}*{box-sizing:border-box}body{margin:0;background:var(--bg);color:#f5f5f7;font:16px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;-webkit-font-smoothing:antialiased}main{max-width:760px;margin:auto;padding:24px}header{display:flex;align-items:center;justify-content:space-between;padding:0 0 22px;border-bottom:1px solid var(--line);margin-bottom:30px}.identity{display:flex;align-items:center;gap:12px}.logo{width:64px;height:64px;border-radius:14px}.brand{font-weight:650;letter-spacing:-.4px;font-size:21px}.caption,.muted{color:var(--muted)}.caption{font-size:12px;margin-top:4px}.badge{font-size:12px;color:#b9d8c5;white-space:nowrap}.dot{display:inline-block;width:6px;height:6px;background:#85c69e;border-radius:50%;margin-right:7px}a{color:inherit}.back{display:inline-block;color:var(--muted);font-size:14px;text-decoration:none;padding:10px 0;margin-bottom:12px}h1{font-size:36px;line-height:1.12;letter-spacing:-1.3px;margin:0 0 12px;font-weight:650}h2{font-size:20px;font-weight:600;letter-spacing:-.4px;margin:0 0 12px}p{color:var(--muted);line-height:1.55;margin:0}.intro{margin-bottom:28px;max-width:530px}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{background:var(--panel);border:1px solid var(--line);border-radius:20px;padding:26px;margin-bottom:18px}.tile{display:flex;flex-direction:column;text-decoration:none;min-height:220px;margin:0}.symbol{font-size:27px;color:var(--accent);margin-bottom:24px}.tile p{font-size:14px}.action{font-size:14px;font-weight:550;margin-top:auto;padding-top:25px;color:#f5f5f7}.tile:hover{background:#22252b}.tile:active{background:#292c33}a:focus-visible,button:focus-visible,input:focus-visible{outline:2px solid #e5e7ed;outline-offset:5px}.status,footer{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;color:var(--muted);font-size:12px;line-height:1.6}.status{margin:22px 0}.status b{font-weight:500;color:#d7d9df}footer{border-top:1px solid var(--line);padding-top:20px;margin-top:32px}.row,.fi{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:15px 0;border-bottom:1px solid var(--line);font-size:14px}.row:last-child,.fi:last-child{border:0}.lbl,.fs{color:var(--muted)}.val{font-variant-numeric:tabular-nums;text-align:right;overflow-wrap:anywhere}.fn{font-weight:550;overflow-wrap:anywhere}.fs{font-size:12px;margin-top:5px}.dp{color:#f18a96}.dn{color:#96c9a8}.btn,button{display:inline-flex;align-items:center;justify-content:center;min-height:44px;padding:11px 18px;border-radius:12px;border:0;background:#343740;color:#fff;text-decoration:none;font:550 14px -apple-system,system-ui,sans-serif;cursor:pointer;white-space:nowrap}.primary{background:#e84255;width:100%;margin-top:24px}.primary:disabled{opacity:.5;cursor:default}.empty{padding:24px 0;color:var(--muted);font-size:14px}input[type=file]{display:block;width:100%;font:14px system-ui;color:var(--muted);padding:18px 0;overflow:hidden}input::file-selector-button{background:#343740;color:#fff;border:0;border-radius:10px;padding:12px 16px;margin-right:12px;font:500 14px system-ui;cursor:pointer}.note{font-size:13px;line-height:1.65}.version{font-size:28px;font-weight:600;letter-spacing:-.8px;margin:8px 0 22px}.label{font-size:12px;color:var(--muted)}progress{display:block;width:100%;height:6px;border:0;border-radius:6px;overflow:hidden;background:#343740;accent-color:#e84255;margin-top:24px}progress::-webkit-progress-bar{background:#343740;border-radius:6px}progress::-webkit-progress-value{background:#e84255;border-radius:6px}progress::-moz-progress-bar{background:#e84255}#msg{font-size:14px;margin-top:14px;overflow-wrap:anywhere} @media(max-width:540px){main{padding:20px}.grid{grid-template-columns:1fr}.tile{min-height:0}.symbol{margin-bottom:18px}.card{padding:22px}h1{font-size:30px}.badge{font-size:11px}.logo{width:54px;height:54px}}
+</style></head><body><main><header><div class="identity"><img class="logo" src="/logo.bmp" alt="Logo KartUp"><div><div class="brand">KartUp</div><div class="caption">Data logger automotivo</div></div></div><span class="badge"><span class="dot"></span>Conectado</span></header>)HTML");
+    if (back) html += F("<a class='back' href='/'>&#8249; Início</a>");
+    html += F("<h1>"); html += title; html += F("</h1>");
+    return html;
+}
+
+void apPageEnd(String& html) {
+    html += F("<footer><span>KartUp</span><span>Firmware ");
+    html += FIRMWARE_VERSION;
+    html += F("</span></footer></main></body></html>");
+}
+
 void handleOtaPage() {
     if (!otaAllowed()) { httpServer.send(409, "text/plain", "Encerre a sessao e ative o WiFi."); return; }
     if (!otaAuthenticated()) { httpServer.requestAuthentication(); return; }
     const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
     httpServer.sendHeader("Cache-Control", "no-store");
-    String html = F(R"HTML(<!doctype html><html lang="pt-BR"><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>KartUp OTA</title>
-<style>body{background:#0a0a0a;color:white;font:17px system-ui;max-width:480px;margin:30px auto;padding:20px}button{background:#e8001d;color:white;padding:14px;border:0;border-radius:6px;margin:18px 0}progress{width:100%}a{color:#00d4ff}</style>
-<h1>Atualizar KartUp</h1><p>Versao atual: )HTML");
+    String html = apPageStart("Atualizar firmware");
+    html += F("<p class='intro'>Selecione o arquivo de atualização salvo no seu dispositivo.</p><section class='card'><div class='label'>Versão instalada</div><div class='version'>");
     html += FIRMWARE_VERSION;
-    html += F("</p><p>Selecione apenas firmware.bin do KartUp para ESP32 CYD. Mantenha o aparelho ligado e fique nesta pagina.</p><p>Limite: ");
-    html += String(next ? next->size : 0);
-    html += F(R"HTML( bytes.</p><form id="f"><input id="bin" type="file" accept=".bin" required><br><button id="go">Instalar firmware</button></form><progress id="p" max="100" value="0"></progress><p id="msg" role="status"></p><a href="/">Voltar</a><script>
+    html += F("</div><form id='f'><label for='bin'>Arquivo de firmware</label><input id='bin' type='file' accept='.bin' required><p class='note'>Use o arquivo .bin do KartUp CYD. Mantenha o aparelho ligado e esta página aberta até a conclusão.</p><button class='primary' id='go' type='submit'>Instalar atualização</button></form><progress aria-label='Progresso do envio' id='p' max='100' value='0'></progress><p id='msg' role='status' aria-live='polite'></p></section><p class='note'>O KartUp reinicia automaticamente após a instalação. Tamanho máximo: ");
+    html += String((next ? next->size : 0) / 1024);
+    html += F(R"HTML( KB.</p><script>
 const f=document.getElementById('f'),b=document.getElementById('bin'),p=document.getElementById('p'),m=document.getElementById('msg'),g=document.getElementById('go');
 f.onsubmit=e=>{e.preventDefault();const file=b.files[0];if(!file||!file.name.toLowerCase().endsWith('.bin')){m.textContent='Selecione um arquivo .bin';return;}
 if(!confirm('Instalar o firmware selecionado e reiniciar?'))return;
@@ -2544,7 +2559,8 @@ g.disabled=true;const x=new XMLHttpRequest();x.open('POST','/update');x.setReque
 x.upload.onload=()=>{m.textContent='Validando firmware. Aguarde...';};
 x.onload=()=>{m.textContent=x.responseText;g.disabled=x.status===200;};
 x.onerror=x.ontimeout=()=>{m.textContent='Conexao interrompida. Verifique o aparelho antes de tentar novamente.';g.disabled=false;};
-const d=new FormData();d.append('firmware',file);x.send(d);};</script></html>)HTML");
+const d=new FormData();d.append('firmware',file);x.send(d);};</script>)HTML");
+    apPageEnd(html);
     httpServer.send(200, "text/html; charset=utf-8", html);
 }
 
@@ -2605,72 +2621,29 @@ void handleOtaResult() {
 void handleRoot() {
     if (!requireApLogin()) return;
     httpServer.sendHeader("Cache-Control", "no-store");
-    String html = F(R"HTML(<!doctype html><html lang="pt-BR"><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="theme-color" content="#0b1016"><title>KartUp | Pit wall</title><style>
-:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0b1016;color:#f2f5f8;font:16px system-ui,-apple-system,sans-serif}main{max-width:740px;margin:auto;padding:28px 22px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:22px;border-bottom:1px solid #28313c}.brand{font-size:25px;font-weight:850;letter-spacing:-1px}.brand span{color:#ff4055}.tag{font:11px monospace;letter-spacing:1px;color:#aab6c5}.live{display:inline-block;width:7px;height:7px;background:#65e6ad;border-radius:50%;margin-right:7px}.eyebrow{font:11px monospace;letter-spacing:3px;color:#65e6ad;margin:34px 0 12px}h1{font-size:clamp(34px,7vw,52px);letter-spacing:-2px;line-height:1.08;margin:0 0 14px}p{color:#aab6c5;line-height:1.6;margin:0}.status{display:flex;gap:18px;flex-wrap:wrap;margin:24px 0 30px;padding:14px 0;border-top:1px solid #28313c;border-bottom:1px solid #28313c;font:12px monospace;color:#aab6c5}.status b{color:#edf3f8;font-weight:400}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{position:relative;display:flex;flex-direction:column;min-height:235px;padding:24px;border:1px solid #303b48;border-top:3px solid #65e6ad;border-radius:12px;background:#131c26;text-decoration:none;color:inherit}.card.update{border-top-color:#ff4055}.num{font:12px monospace;color:#aab6c5;letter-spacing:2px}.icon{font:28px monospace;color:#65e6ad;margin:20px 0 12px}.update .icon{color:#ff6677}h2{font-size:23px;letter-spacing:-.6px;margin:0 0 8px}.card p{font-size:14px}.action{display:flex;justify-content:space-between;align-items:center;margin-top:auto;padding-top:24px;font-size:13px;font-weight:650}.arrow{font-size:22px}.card:hover{background:#1b2835}.card:focus-visible{outline:3px solid #fff;outline-offset:4px}.card:active{background:#243446}footer{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-top:28px;color:#8f9dad;font:11px monospace;line-height:1.7}.footnote{margin-top:26px;font-size:12px}@media(max-width:520px){main{padding:22px 18px}.grid{grid-template-columns:1fr}.card{min-height:0;padding:22px}.icon{position:absolute;right:22px;top:13px}.card h2{margin-top:18px}.action{padding-top:18px}}
-</style></head><body><main>
-<header><div class="brand">kart<span>Up</span><div class="tag">AUTOMOTIVE DATA LOGGER</div></div><div class="tag"><span class="live"></span>AP ATIVO</div></header>
-<div class="eyebrow">PIT WALL / ACESSO LOCAL</div><h1>Cada volta.<br>Cada detalhe.</h1><p>Seus dados na mão. Seu KartUp pronto para a próxima sessão.</p>
-<div class="status"><span>REDE <b>KartUp-Telemetria</b></span><span>SD <b>)HTML");
-    html += sdOk ? F("DISPONÍVEL") : F("INDISPONÍVEL");
-    html += F(R"HTML(</b></span></div>
-<nav class="grid" aria-label="Opções do KartUp">
-<a class="card" href="/logs"><span class="num">01 / DADOS</span><span class="icon" aria-hidden="true">&#8595;</span><h2>Baixar logs</h2><p>Leve suas sessões em CSV para analisar cada passagem pela pista.</p><span class="action">Explorar sessões <span class="arrow" aria-hidden="true">&#8594;</span></span></a>
-<a class="card update" href="/update"><span class="num">02 / EVOLUÇÃO</span><span class="icon" aria-hidden="true">&#8593;</span><h2>Atualizar firmware</h2><p>Instale a próxima versão do KartUp diretamente pelo navegador.</p><span class="action">Selecionar firmware <span class="arrow" aria-hidden="true">&#8594;</span></span></a>
-</nav><p class="footnote">Conexão direta com o KartUp. Funciona sem internet.</p><footer><span>FIRMWARE / )HTML");
-    html += FIRMWARE_VERSION;
-    html += F("</span><span>KARTUP / DRIVEN BY DATA</span></footer></main></body></html>");
+    String html = apPageStart("Seu KartUp", false);
+    html += F("<p class='intro'>Gerencie os dados e o software do dispositivo.</p><nav class='grid' aria-label='Opções do KartUp'><a class='card tile' href='/logs'><span class='symbol' aria-hidden='true'>&#8595;</span><h2>Logs</h2><p>Consulte as sessões e baixe os arquivos CSV.</p><span class='action'>Ver arquivos &#8594;</span></a><a class='card tile' href='/update'><span class='symbol' aria-hidden='true'>&#8593;</span><h2>Firmware</h2><p>Confira a versão e instale uma atualização.</p><span class='action'>Gerenciar firmware &#8594;</span></a></nav><div class='status'><span>Wi-Fi <b>KartUp-Telemetria</b></span><span>Cartão SD <b>");
+    html += sdOk ? F("Disponível") : F("Indisponível");
+    html += F("</b></span></div>");
+    apPageEnd(html);
     httpServer.send(200, "text/html; charset=utf-8", html);
 }
 
 void handleLogs() {
     if (!requireApLogin()) return;
 
-    String html;
-    html.reserve(4096);
-
-    html = F("<!DOCTYPE html><html><head>"
-        "<meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>KartUp Telemetria</title>"
-        "<style>"
-        "*{box-sizing:border-box;margin:0;padding:0}"
-        "body{background:#0a0a0a;color:#fff;font-family:'Courier New',monospace;padding:20px;max-width:480px;margin:0 auto}"
-        "header{display:flex;align-items:center;gap:14px;margin-bottom:24px;border-bottom:2px solid #E8001D;padding-bottom:14px}"
-        "header img{width:60px;height:60px}"
-        "header h1{font-size:1.6em;color:#E8001D;letter-spacing:2px}"
-        "header p{font-size:.75em;color:#888;margin-top:2px}"
-        ".card{background:#141414;border:1px solid #2a2a2a;border-radius:8px;padding:16px;margin-bottom:20px}"
-        ".card h2{font-size:.75em;color:#E8001D;letter-spacing:2px;margin-bottom:12px}"
-        ".row{display:flex;justify-content:space-between;padding:5px 0;border-bottom:1px solid #1e1e1e;font-size:.9em}"
-        ".row:last-child{border-bottom:none}"
-        ".lbl{color:#888}"
-        ".val{color:#FFA500;font-weight:bold}"
-        ".dp{color:#ff4444}"
-        ".dn{color:#44ff44}"
-        ".fi{display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #1e1e1e}"
-        ".fi:last-child{border-bottom:none}"
-        ".fn{color:#fff;font-size:.9em}"
-        ".fs{color:#555;font-size:.8em;margin-top:2px}"
-        "a.btn{background:#E8001D;color:#fff;text-decoration:none;padding:6px 14px;border-radius:4px;font-size:.8em;letter-spacing:1px}"
-        ".empty{color:#555;font-size:.9em;padding:12px 0}"
-        "</style></head><body>");
-
-    html += F("<header><img src='/logo.bmp' alt='KartUp'>"
-              "<div><h1>KARTUP</h1><p>Telemetria GPS</p></div></header>");
-
-    html += F("<p style='margin-bottom:20px'><a class='btn' href='/'>VOLTAR AO MENU</a></p>");
+    String html = apPageStart("Logs");
+    html += F("<p class='intro'>Sessões e arquivos CSV salvos no cartão SD.</p>");
 
     // Card sessão
-    html += F("<div class='card'><h2>SESSAO ATUAL</h2>");
+    html += F("<div class='card'><h2>Resumo da sessão</h2>");
     html += "<div class='row'><span class='lbl'>Arquivo</span><span class='val'>";
     html += logPath; html += "</span></div>";
     html += "<div class='row'><span class='lbl'>Voltas</span><span class='val'>";
     html += lapCount; html += "</span></div>";
     html += "<div class='row'><span class='lbl'>Melhor volta</span><span class='val'>";
     html += fmtLap(bestLapMs); html += "</span></div>";
-    html += "<div class='row'><span class='lbl'>Ultima volta</span><span class='val'>";
+    html += "<div class='row'><span class='lbl'>Última volta</span><span class='val'>";
     html += fmtLap(lastLapMs); html += "</span></div>";
     html += "<div class='row'><span class='lbl'>Delta</span><span class='";
     html += (deltaS <= 0.0f) ? "dn" : "dp";
@@ -2680,9 +2653,9 @@ void handleLogs() {
     html += F("</div>");
 
     // Lista arquivos
-    html += F("<div class='card'><h2>ARQUIVOS NO SD</h2>");
+    html += F("<div class='card'><h2>Arquivos</h2>");
     if (!sdOk) {
-        html += F("<p class='empty'>SD card indisponivel</p>");
+        html += F("<p class='empty'>Cartão SD indisponível. Insira o cartão e reative o Wi-Fi.</p>");
     } else {
         File32 dir = sd.open("/");
         File32 entry;
@@ -2690,7 +2663,7 @@ void handleLogs() {
         while (entry.openNext(&dir, O_READ)) {
             char name[32];
             entry.getName(name, sizeof(name));
-            if (strncmp(name, "gps_", 4) == 0) {
+            if (strncmp(name, "gps_", 4) == 0 && String(name).endsWith(".csv") && strlen(name) <= 12) {
                 uint32_t sz = entry.fileSize();
                 html += "<div class='fi'><div><div class='fn'>";
                 html += name;
@@ -2698,15 +2671,16 @@ void handleLogs() {
                 html += String(sz / 1024.0f, 1);
                 html += " KB</div></div><a class='btn' href='/download?file=";
                 html += name;
-                html += "'>BAIXAR</a></div>";
+                html += "' download>Baixar CSV</a></div>";
                 count++;
             }
             entry.close();
         }
         dir.close();
-        if (count == 0) html += F("<p class='empty'>Nenhum arquivo encontrado</p>");
+        if (count == 0) html += F("<p class='empty'>Nenhum arquivo de sessão encontrado.</p>");
     }
-    html += F("</div></body></html>");
+    html += F("</div>");
+    apPageEnd(html);
 
     httpServer.send(200, "text/html; charset=utf-8", html);
 }
