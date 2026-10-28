@@ -91,3 +91,9 @@ com fonte 2. A barra decorativa e o texto no canto da engrenagem foram removidos
 
 No aparelho, conferir login incorreto/correto no menu, acesso direto a `/logs`
 e `/download`, download CSV, atualização OTA e posição da versão após reiniciar.
+
+## Nova série 0.0.1 OTA
+
+A numeração recomeça em 0.0.1 OTA por decisão do projeto. Consulte CHANGELOG.md
+e AGENTS.md para histórico e regra de incremento. O menu AP recebe visual de pit
+wall em HTML/CSS local, sem fontes externas ou scripts. O status SD reflete sdOk.

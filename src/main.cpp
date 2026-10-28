@@ -20,7 +20,7 @@
 #include <WebServer.h>
 #include <Update.h>
 #include <esp_ota_ops.h>
-#define FIRMWARE_VERSION "2.2.2-ota"
+#define FIRMWARE_VERSION "0.0.1 OTA"
 
 // ─── MOCK DATA (descomente a linha abaixo para simular sem GPS) ───
 // #define USE_MOCK_DATA true
@@ -2607,17 +2607,20 @@ void handleRoot() {
     httpServer.sendHeader("Cache-Control", "no-store");
     String html = F(R"HTML(<!doctype html><html lang="pt-BR"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>KartUp — Wi-Fi</title><style>
-*{box-sizing:border-box}body{background:#0a0a0a;color:#fff;font:18px system-ui;max-width:480px;margin:0 auto;padding:24px}
-header{display:flex;align-items:center;gap:16px;border-bottom:2px solid #e8001d;padding-bottom:18px}img{width:64px;height:64px}h1{margin:0;color:#e8001d}header p{margin:4px 0;color:#aaa;font-size:14px}
-h2{font-size:22px;margin-top:28px}.option{display:block;background:#171717;border:1px solid #444;border-radius:10px;padding:22px;margin:18px 0;color:#fff;text-decoration:none}.option strong{display:block;font-size:21px;margin-bottom:8px}.option span{color:#bbb;font-size:16px}.update{border-color:#e8001d}footer{color:#aaa;font-size:14px}
-</style></head><body><header><img src="/logo.bmp" alt="KartUp"><div><h1>KARTUP</h1><p>Modo Wi-Fi</p></div></header>
-<h2>O que deseja fazer?</h2>
-<a class="option" href="/logs"><strong>1. Baixar logs</strong><span>Ver as sessões e baixar os arquivos CSV do cartão SD.</span></a>
-<a class="option update" href="/update"><strong>2. Atualizar firmware</strong><span>Instalar um arquivo .bin. Use admin e a senha exibida na tela do KartUp.</span></a>
-<footer>Firmware: )HTML");
+<meta name="theme-color" content="#0b1016"><title>KartUp | Pit wall</title><style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0b1016;color:#f2f5f8;font:16px system-ui,-apple-system,sans-serif}main{max-width:740px;margin:auto;padding:28px 22px}header{display:flex;align-items:center;justify-content:space-between;gap:12px;padding-bottom:22px;border-bottom:1px solid #28313c}.brand{font-size:25px;font-weight:850;letter-spacing:-1px}.brand span{color:#ff4055}.tag{font:11px monospace;letter-spacing:1px;color:#aab6c5}.live{display:inline-block;width:7px;height:7px;background:#65e6ad;border-radius:50%;margin-right:7px}.eyebrow{font:11px monospace;letter-spacing:3px;color:#65e6ad;margin:34px 0 12px}h1{font-size:clamp(34px,7vw,52px);letter-spacing:-2px;line-height:1.08;margin:0 0 14px}p{color:#aab6c5;line-height:1.6;margin:0}.status{display:flex;gap:18px;flex-wrap:wrap;margin:24px 0 30px;padding:14px 0;border-top:1px solid #28313c;border-bottom:1px solid #28313c;font:12px monospace;color:#aab6c5}.status b{color:#edf3f8;font-weight:400}.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px}.card{position:relative;display:flex;flex-direction:column;min-height:235px;padding:24px;border:1px solid #303b48;border-top:3px solid #65e6ad;border-radius:12px;background:#131c26;text-decoration:none;color:inherit}.card.update{border-top-color:#ff4055}.num{font:12px monospace;color:#aab6c5;letter-spacing:2px}.icon{font:28px monospace;color:#65e6ad;margin:20px 0 12px}.update .icon{color:#ff6677}h2{font-size:23px;letter-spacing:-.6px;margin:0 0 8px}.card p{font-size:14px}.action{display:flex;justify-content:space-between;align-items:center;margin-top:auto;padding-top:24px;font-size:13px;font-weight:650}.arrow{font-size:22px}.card:hover{background:#1b2835}.card:focus-visible{outline:3px solid #fff;outline-offset:4px}.card:active{background:#243446}footer{display:flex;justify-content:space-between;gap:14px;flex-wrap:wrap;margin-top:28px;color:#8f9dad;font:11px monospace;line-height:1.7}.footnote{margin-top:26px;font-size:12px}@media(max-width:520px){main{padding:22px 18px}.grid{grid-template-columns:1fr}.card{min-height:0;padding:22px}.icon{position:absolute;right:22px;top:13px}.card h2{margin-top:18px}.action{padding-top:18px}}
+</style></head><body><main>
+<header><div class="brand">kart<span>Up</span><div class="tag">AUTOMOTIVE DATA LOGGER</div></div><div class="tag"><span class="live"></span>AP ATIVO</div></header>
+<div class="eyebrow">PIT WALL / ACESSO LOCAL</div><h1>Cada volta.<br>Cada detalhe.</h1><p>Seus dados na mão. Seu KartUp pronto para a próxima sessão.</p>
+<div class="status"><span>REDE <b>KartUp-Telemetria</b></span><span>SD <b>)HTML");
+    html += sdOk ? F("DISPONÍVEL") : F("INDISPONÍVEL");
+    html += F(R"HTML(</b></span></div>
+<nav class="grid" aria-label="Opções do KartUp">
+<a class="card" href="/logs"><span class="num">01 / DADOS</span><span class="icon" aria-hidden="true">&#8595;</span><h2>Baixar logs</h2><p>Leve suas sessões em CSV para analisar cada passagem pela pista.</p><span class="action">Explorar sessões <span class="arrow" aria-hidden="true">&#8594;</span></span></a>
+<a class="card update" href="/update"><span class="num">02 / EVOLUÇÃO</span><span class="icon" aria-hidden="true">&#8593;</span><h2>Atualizar firmware</h2><p>Instale a próxima versão do KartUp diretamente pelo navegador.</p><span class="action">Selecionar firmware <span class="arrow" aria-hidden="true">&#8594;</span></span></a>
+</nav><p class="footnote">Conexão direta com o KartUp. Funciona sem internet.</p><footer><span>FIRMWARE / )HTML");
     html += FIRMWARE_VERSION;
-    html += F("</footer></body></html>");
+    html += F("</span><span>KARTUP / DRIVEN BY DATA</span></footer></main></body></html>");
     httpServer.send(200, "text/html; charset=utf-8", html);
 }
 
