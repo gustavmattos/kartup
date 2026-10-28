@@ -18,6 +18,9 @@
 #include "f1_time_font.h"
 #include <WiFi.h>
 #include <WebServer.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
+#define FIRMWARE_VERSION "2.2.0-ota"
 
 // ─── MOCK DATA (descomente a linha abaixo para simular sem GPS) ───
 // #define USE_MOCK_DATA true
@@ -194,6 +197,12 @@ enum UiScreen {
 bool isLogging = false;
 bool wifiMode  = false;
 WebServer httpServer(80);
+char otaPassword[9] = "";
+char otaToken[33] = "";
+bool otaReceiving = false;
+bool otaComplete = false;
+String otaError;
+size_t otaBytes = 0;
 UiScreen currentScreen = SCREEN_BOOT;
 UiScreen shutdownReturnScreen = SCREEN_BOOT;
 UiScreen wifiReturnScreen = SCREEN_READY;
@@ -959,7 +968,7 @@ void drawBootScreen() {
     tft.setTextDatum(TL_DATUM);
     tft.drawString("ESP32 CYD", 8, 8);
     tft.setTextDatum(TR_DATUM);
-    tft.drawString("v2.0", W - 8, 8);
+    tft.drawString(FIRMWARE_VERSION, W - 8, 8);
 
     // Logo centralizado
     const int logoX = (W - LOGO_W) / 2;
@@ -1344,9 +1353,9 @@ void drawSettingsScreen() {
                 C_PURPLE,
                 "05//SYS", "OK", C_GREEN,
                 drawIcCpu, C_PURPLE,
-                "v2.0", C_PURPLE,
+                "v2.2", C_PURPLE,
                 false, 0,
-                "240MHz", "ESP32");
+                "OTA", "ESP32");
 
     // 06 // PURGE (delete logs - destrutivo)
     drawHudTile(213, TILE_ROW2, TILE_W, TILE_H,
@@ -2373,6 +2382,10 @@ void drawWiFiScreen() {
     tft.setTextDatum(MC_DATUM);
     tft.drawString("Conecte na rede e abra o IP no navegador", W/2, 112);
 
+    tft.setTextColor(C_ORANGE, C_BG);
+    tft.drawString(String("OTA: admin / ") + otaPassword, W/2, 138);
+    tft.drawString("Firmware: /update", W/2, 154);
+
     tft.fillRoundRect(WIFI_SAIR_X, WIFI_SAIR_Y, WIFI_SAIR_W, WIFI_SAIR_H, 8, C_RED_F1);
     tft.drawRoundRect(WIFI_SAIR_X-1, WIFI_SAIR_Y-1, WIFI_SAIR_W+2, WIFI_SAIR_H+2, 9, C_WHITE);
     tft.setTextFont(4);
@@ -2488,6 +2501,96 @@ void handleLogo() {
     free(buf);
 }
 
+
+// OTA is available only while the user has explicitly enabled WiFi mode.
+bool otaAllowed() {
+    return wifiMode && !isLogging;
+}
+
+bool otaAuthenticated() {
+    return httpServer.authenticate("admin", otaPassword);
+}
+
+void handleOtaPage() {
+    if (!otaAllowed()) { httpServer.send(409, "text/plain", "Encerre a sessao e ative o WiFi."); return; }
+    if (!otaAuthenticated()) { httpServer.requestAuthentication(); return; }
+    const esp_partition_t* next = esp_ota_get_next_update_partition(nullptr);
+    httpServer.sendHeader("Cache-Control", "no-store");
+    String html = F(R"HTML(<!doctype html><html lang="pt-BR"><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>KartUp OTA</title>
+<style>body{background:#0a0a0a;color:white;font:17px system-ui;max-width:480px;margin:30px auto;padding:20px}button{background:#e8001d;color:white;padding:14px;border:0;border-radius:6px;margin:18px 0}progress{width:100%}a{color:#00d4ff}</style>
+<h1>Atualizar KartUp</h1><p>Versao atual: )HTML");
+    html += FIRMWARE_VERSION;
+    html += F("</p><p>Selecione apenas firmware.bin do KartUp para ESP32 CYD. Mantenha o aparelho ligado e fique nesta pagina.</p><p>Limite: ");
+    html += String(next ? next->size : 0);
+    html += F(R"HTML( bytes.</p><form id="f"><input id="bin" type="file" accept=".bin" required><br><button id="go">Instalar firmware</button></form><progress id="p" max="100" value="0"></progress><p id="msg" role="status"></p><a href="/">Voltar</a><script>
+const f=document.getElementById('f'),b=document.getElementById('bin'),p=document.getElementById('p'),m=document.getElementById('msg'),g=document.getElementById('go');
+f.onsubmit=e=>{e.preventDefault();const file=b.files[0];if(!file||!file.name.toLowerCase().endsWith('.bin')){m.textContent='Selecione um arquivo .bin';return;}
+if(!confirm('Instalar o firmware selecionado e reiniciar?'))return;
+g.disabled=true;const x=new XMLHttpRequest();x.open('POST','/update');x.setRequestHeader('X-KartUp-Token',')HTML");
+    html += otaToken;
+    html += F(R"HTML(');x.timeout=180000;x.upload.onprogress=e=>{if(e.lengthComputable){p.value=e.loaded/e.total*100;m.textContent='Enviando: '+Math.round(p.value)+'%';}};
+x.upload.onload=()=>{m.textContent='Validando firmware. Aguarde...';};
+x.onload=()=>{m.textContent=x.responseText;g.disabled=x.status===200;};
+x.onerror=x.ontimeout=()=>{m.textContent='Conexao interrompida. Verifique o aparelho antes de tentar novamente.';g.disabled=false;};
+const d=new FormData();d.append('firmware',file);x.send(d);};</script></html>)HTML");
+    httpServer.send(200, "text/html; charset=utf-8", html);
+}
+
+void handleOtaUpload() {
+    HTTPUpload& upload = httpServer.upload();
+    if (upload.status == UPLOAD_FILE_START) {
+        // Never touch flash before checking both authentication and the page token.
+        otaError = "";
+        otaComplete = false;
+        otaBytes = 0;
+        if (otaReceiving) { Update.abort(); otaReceiving = false; }
+        if (!otaAllowed() || !otaAuthenticated() || httpServer.header("X-KartUp-Token") != otaToken) {
+            otaError = "Acesso OTA negado."; return;
+        }
+        if (upload.name != "firmware" || !upload.filename.endsWith(".bin")) {
+            otaError = "Selecione firmware.bin."; return;
+        }
+        if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+            otaError = String("Falha ao iniciar: ") + Update.errorString(); return;
+        }
+        otaReceiving = true;
+    } else if (upload.status == UPLOAD_FILE_WRITE && otaReceiving) {
+        if (Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
+            otaError = String("Falha na gravacao: ") + Update.errorString();
+            Update.abort(); otaReceiving = false;
+        } else { otaBytes += upload.currentSize; }
+    } else if (upload.status == UPLOAD_FILE_END && otaReceiving) {
+        otaComplete = otaBytes > 0 && Update.end(true);
+        if (!otaComplete) {
+            otaError = String("Firmware rejeitado: ") + Update.errorString();
+            Update.abort();
+        }
+        otaReceiving = false;
+    } else if (upload.status == UPLOAD_FILE_ABORTED) {
+        if (otaReceiving) Update.abort();
+        otaReceiving = false; otaComplete = false;
+        otaError = "Envio cancelado. Firmware anterior mantido.";
+    }
+}
+
+void handleOtaResult() {
+    if (!otaAllowed()) { httpServer.send(409, "text/plain", "OTA indisponivel durante sessao."); return; }
+    if (!otaAuthenticated()) { httpServer.requestAuthentication(); return; }
+    if (httpServer.header("X-KartUp-Token") != otaToken) {
+        httpServer.send(403, "text/plain", "Reabra a pagina de atualizacao."); return;
+    }
+    httpServer.sendHeader("Cache-Control", "no-store");
+    httpServer.sendHeader("Connection", "close");
+    if (!otaComplete) {
+        httpServer.send(400, "text/plain; charset=utf-8", otaError.length() ? otaError : "Nenhum firmware recebido.");
+        return;
+    }
+    httpServer.send(200, "text/plain; charset=utf-8", "Firmware instalado. KartUp reiniciando; reconecte ao WiFi se necessario.");
+    delay(1000);
+    ESP.restart();
+}
+
 void handleRoot() {
     String html;
     html.reserve(4096);
@@ -2521,6 +2624,10 @@ void handleRoot() {
 
     html += F("<header><img src='/logo.bmp' alt='KartUp'>"
               "<div><h1>KARTUP</h1><p>Telemetria GPS</p></div></header>");
+
+    html += F("<div class='card'><h2>FIRMWARE</h2><p>");
+    html += FIRMWARE_VERSION;
+    html += F("</p><br><a class='btn' href='/update'>ATUALIZAR FIRMWARE</a></div>");
 
     // Card sessão
     html += F("<div class='card'><h2>SESSAO ATUAL</h2>");
@@ -2608,6 +2715,11 @@ void handleDownload() {
 // ENTRA / SAI do modo WiFi
 // ─────────────────────────────────────────────────────────────
 void enterWiFiMode() {
+    if (isLogging) return;
+    snprintf(otaPassword, sizeof(otaPassword), "%08lu", (unsigned long)(esp_random() % 100000000));
+    snprintf(otaToken, sizeof(otaToken), "%08lx%08lx%08lx%08lx",
+        (unsigned long)esp_random(), (unsigned long)esp_random(),
+        (unsigned long)esp_random(), (unsigned long)esp_random());
     // Re-inicializa SD em modo leitura (sdOk estava false após stopLogging)
     SdSpiConfig cfg(SD_CS_PIN, DEDICATED_SPI, SD_SCK_MHZ(2), &softSpi);
     sdOk = sd.begin(cfg);
@@ -2763,6 +2875,10 @@ void setup() {
     configureGPS();
 #endif
 
+    const char* otaHeaders[] = {"X-KartUp-Token"};
+    httpServer.collectHeaders(otaHeaders, 1);
+    httpServer.on("/update", HTTP_GET, handleOtaPage);
+    httpServer.on("/update", HTTP_POST, handleOtaResult, handleOtaUpload);
     httpServer.on("/",         HTTP_GET, handleRoot);
     httpServer.on("/logo.bmp", HTTP_GET, handleLogo);
     httpServer.on("/download", HTTP_GET, handleDownload);

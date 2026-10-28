@@ -113,6 +113,13 @@ kartup.prolaptimer/
 
 ---
 
+## Atualizacao OTA pelo iPad
+
+A versao 2.2.0 adiciona atualizacao pelo navegador em `http://192.168.4.1/update`.
+Ative Settings → WLAN e use `admin` com a senha temporaria exibida na tela.
+A primeira instalacao requer USB; as seguintes aceitam `firmware.bin` pelo Safari.
+Consulte [o guia de instalacao e OTA](docs/OTA.md) para os arquivos e comandos.
+
 ## Build & Flash
 
 ### Pré-requisitos
@@ -220,7 +227,7 @@ Importável diretamente em ferramentas como **RaceChrono**, **TrackAddict** ou p
 - [ ] PURGE funcional (delete logs com confirmação)
 - [ ] Estatísticas de sessão (média, top 3 voltas, consistência)
 - [ ] Setores intermediários (split times por trecho da pista)
-- [ ] OTA update via WiFi
+- [x] OTA update via WiFi (v2.2.0, pagina /update com autenticacao)
 - [ ] Exportação direta para RaceChrono via Bluetooth
 - [ ] Suporte a antena GPS ativa externa (conector U.FL)
 - [ ] Tela de pós-sessão com gráfico de voltas
